@@ -111,7 +111,7 @@ def generar_xml_ubl21(venta_data, cliente_data, productos, empresa_data, num_fac
     etree.SubElement(address, cbc+"CityName").text = empresa_data.get("ciudad", "MANIZALES")
     etree.SubElement(address, cbc+"CountrySubentity").text = empresa_data.get("departamento", "CALDAS")
     etree.SubElement(address, cbc+"CountrySubentityCode").text = empresa_data.get("codigo_departamento", "17")
-    etree.SubElement(address, cbc+"AddressLine").text = empresa_data.get("direccion", "CR 43 A 15 SUR 15 ED XEROX OF 802")
+    etree.SubElement(address, cbc+"AddressLine").text = empresa_data.get("direccion", "CALLE 10 10 34")
     country = etree.SubElement(address, cac+"Country")
     etree.SubElement(country, cbc+"IdentificationCode").text = empresa_data.get("codigo_pais", "CO")
 
@@ -216,8 +216,7 @@ def generar_xml_factura_dian(venta_data, cliente_data, productos, empresa_data, 
     """
     from lxml import etree
     root = etree.Element("FACTURA")
-    # ...resto del código...
-    # (Mover LineCountNumeric al final, después de los ITE)
+    
     # ENC
     enc = etree.SubElement(root, "ENC")
     etree.SubElement(enc, "ENC_1").text = "INVOIC"
@@ -250,16 +249,16 @@ def generar_xml_factura_dian(venta_data, cliente_data, productos, empresa_data, 
     etree.SubElement(emi, "EMI_2").text = "901143311"  
     etree.SubElement(emi, "EMI_3").text = "31"  # Tipo de organización
     etree.SubElement(emi, "EMI_4").text = "48"  
-    etree.SubElement(emi, "EMI_6").text = "FACTURATECH SA. DE CV"  # Razón social
-    etree.SubElement(emi, "EMI_7").text = "FACTURATECH SA. DE CV"  # Nombre comercial
-    etree.SubElement(emi, "EMI_10").text = "CR 43 A 15 SUR 15 ED XEROX OF 802"  # Dirección
+    etree.SubElement(emi, "EMI_6").text = "JUAN SEBASTIAN BERMUDEZ PARRA"  # Razón social
+    etree.SubElement(emi, "EMI_7").text = "JUAN SEBASTIAN BERMUDEZ PARRA"  # Nombre comercial
+    etree.SubElement(emi, "EMI_10").text = "CALLE 10 10 34"  # Dirección
     etree.SubElement(emi, "EMI_11").text = "17"  # Código departamento Caldas
     etree.SubElement(emi, "EMI_13").text = "MANIZALES"  # Ciudad
     etree.SubElement(emi, "EMI_15").text = "CO"  # País
     etree.SubElement(emi, "EMI_19").text = "Caldas"  # Nombre departamento
     etree.SubElement(emi, "EMI_22").text = "8"  # Código de responsabilidad fiscal
     etree.SubElement(emi, "EMI_23").text = "17001"  # Código municipio Manizales
-    etree.SubElement(emi, "EMI_24").text = "FACTURATECH SA. DE CV"  # Nombre contacto
+    etree.SubElement(emi, "EMI_24").text = "JUAN SEBASTIAN BERMUDEZ PARRA"  # Nombre contacto
     # TAC
     tac = etree.SubElement(emi, "TAC")
     etree.SubElement(tac, "TAC_1").text = "R-99-PN"
@@ -272,7 +271,7 @@ def generar_xml_factura_dian(venta_data, cliente_data, productos, empresa_data, 
     etree.SubElement(dfe, "DFE_5").text = "Colombia" # Nombre país
     etree.SubElement(dfe, "DFE_6").text = "Caldas"   # Nombre departamento
     etree.SubElement(dfe, "DFE_7").text = "MANIZALES" # Nombre ciudad
-    etree.SubElement(dfe, "DFE_8").text = "CR 43 A 15 SUR 15 ED XEROX OF 802" # Dirección
+    etree.SubElement(dfe, "DFE_8").text = "CALLE 10 10 34" # Dirección
 
     # ICC
     icc = etree.SubElement(emi, "ICC")
@@ -454,7 +453,7 @@ def generar_xml_factura_dian(venta_data, cliente_data, productos, empresa_data, 
         pass  # Si no hay entorno gráfico, no mostrar mensaje
     return xml_str
 
-from Smart_data_syncro.facturatech_api import FacturaTechClient
+from facturatech_api import FacturaTechClient
 from tkinter import simpledialog, messagebox
 
 def consultar_estado_factura():
