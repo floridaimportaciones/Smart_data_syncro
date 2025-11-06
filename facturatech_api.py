@@ -1,10 +1,10 @@
 from zeep import Client
 
-WSDL_URL = "https://ws.facturatech.co/v2/demo/index.php?wsdl"
+WSDL_URL = "https://ws.facturatech.co/v2/pro/index.php?wsdl"
 
 # Usa las credenciales de tu imagen
-FACTURATECH_USER = "SIDEIN01072025"
-FACTURATECH_PASS = "aa021b872a1929300e29a0369b84eb0a37fa9e650950bfac2c310b5f48f8e5a3"
+FACTURATECH_USER = "75106045"
+FACTURATECH_PASS = "762A6217657F5472CE90C86B18A219CB269F6BC1071A21601AEDFF97F6739DA0"
 
 class FacturaTechClient:
     def __init__(self, username=FACTURATECH_USER, password=FACTURATECH_PASS):
