@@ -13,9 +13,9 @@ from reportlab.pdfgen import canvas
 import sys
 import os
 from PIL import Image, ImageTk
-from Smart_data_syncro.utils import rutas
-from Smart_data_syncro.facturatech_api import FacturaTechClient
-from Smart_data_syncro.generar_xml import generar_xml_factura_dian, generar_xml_ubl21
+from utils import rutas
+from facturatech_api import FacturaTechClient
+from generar_xml import generar_xml_factura_dian, generar_xml_ubl21
 import base64
 
 class Ventas(tk.Frame):
@@ -66,6 +66,8 @@ class Ventas(tk.Frame):
         self.cargar_clientes()
         self.timer_producto = None
         self.timer_cliente = None
+        # Timer para detectar scanners que no envían <Return>
+        self.barcode_timer_producto = None
         self.bind("<<ClienteActualizado>>", lambda e: self.cargar_clientes())
         self.actualizar_folios_disponibles()
         # Asegurar tabla de abonos para soportar pago parcial en ventas
@@ -160,6 +162,52 @@ class Ventas(tk.Frame):
             self.timer_producto.cancel()
         self.timer_producto = threading.Timer(0.5, self._filter_products)
         self.timer_producto.start()
+        # Detección por temporizador para lectores que no envían <Return>
+        try:
+            if getattr(self, 'barcode_timer_producto', None):
+                try:
+                    self.barcode_timer_producto.cancel()
+                except Exception:
+                    pass
+            typed_now = self.entry_producto.get().strip()
+            # Heurística: si contiene dígitos y tiene al menos 3 caracteres, probablemente sea un código
+            if typed_now and (typed_now.isdigit() or (any(ch.isdigit() for ch in typed_now) and len(typed_now) >= 3)):
+                def _call():
+                    try:
+                        self.after(0, self._maybe_on_producto_enter)
+                    except Exception:
+                        pass
+                self.barcode_timer_producto = threading.Timer(0.25, _call)
+                self.barcode_timer_producto.start()
+        except Exception:
+            pass
+
+    def _maybe_on_producto_enter(self):
+        """Llama a on_producto_enter solo si el campo producto aún tiene el foco.
+        Esto permite que el usuario salga del combobox sin que el timer obligue una selección.
+        """
+        try:
+            # Si el focus está en el combobox, proceder
+            if self.entry_producto.focus_get() == self.entry_producto:
+                self.on_producto_enter()
+        except Exception:
+            pass
+
+    def _cancel_barcode_timers(self, event=None):
+        """Cancela timers pendientes para evitar ejecuciones automáticas tras perder foco."""
+        try:
+            if getattr(self, 'timer_producto', None):
+                try:
+                    self.timer_producto.cancel()
+                except Exception:
+                    pass
+            if getattr(self, 'barcode_timer_producto', None):
+                try:
+                    self.barcode_timer_producto.cancel()
+                except Exception:
+                    pass
+        except Exception:
+            pass
         
     def _filter_products(self):
         typed = self.entry_producto.get()
@@ -174,10 +222,10 @@ class Ventas(tk.Frame):
                 for p in self.products
                 if typed.lower() in p["nombre"].lower() or typed in (str(p["codigo"]) if p.get("codigo") is not None else '')
             ]
+        # Actualizar las opciones mostradas en el combobox.
+        # No borramos el texto del campo: si el usuario o el escáner han puesto un valor
+        # preferimos mantenerlo visible aunque no haya coincidencias inmediatamente.
         self.entry_producto['values'] = data if data else ['No se encontraron resultados']
-        self.entry_producto.event_generate('<Down>')
-        if not data:
-            self.entry_producto.delete(0, tk.END)
 
     def _extract_codigo(self, value: str):
         """Devuelve el código a partir del valor del combobox.
@@ -206,6 +254,113 @@ class Ventas(tk.Frame):
         # Si nombre parcial y hay varios códigos, forzar a elegir con código
         return None
 
+    def on_producto_enter(self, event=None):
+        """Detecta cuando se ingresa un código (p. ej. por escáner) en `entry_producto`.
+        Si el valor coincide con el campo `codigo` de algún producto, asigna al Combobox
+        el texto "Nombre [CODIGO]", actualiza el stock y mueve el foco a la cantidad.
+        """
+        try:
+            # Cancelar timers pendientes para evitar que el filtrado posterior sobreescriba el valor
+            try:
+                if getattr(self, 'timer_producto', None):
+                    self.timer_producto.cancel()
+            except Exception:
+                pass
+            try:
+                if getattr(self, 'barcode_timer_producto', None):
+                    self.barcode_timer_producto.cancel()
+            except Exception:
+                pass
+            val = str(self.entry_producto.get()).strip()
+            if not val:
+                return
+
+            # Buscar coincidencia exacta por código
+            matched = None
+            for p in getattr(self, 'products', []):
+                code = str(p.get('codigo') or '').strip()
+                if code and val == code:
+                    matched = p
+                    break
+
+            # Si no hay coincidencia exacta, intentar limpiar caracteres no imprimibles
+            if not matched:
+                cleaned = ''.join(ch for ch in val if ch.isprintable()).strip()
+                for p in getattr(self, 'products', []):
+                    code = str(p.get('codigo') or '').strip()
+                    if code and cleaned == code:
+                        matched = p
+                        break
+
+            if matched:
+                code = str(matched.get('codigo') or '').strip()
+                display = f"{matched['nombre']} [{code}]" if code else matched['nombre']
+                # Asegurar que el valor esté en la lista de opciones y fijarlo como seleccionado
+                try:
+                    current_vals = list(self.entry_producto['values']) if self.entry_producto['values'] else []
+                except Exception:
+                    current_vals = []
+                # Insertar display al inicio si no existe
+                if display not in current_vals:
+                    new_vals = [display] + current_vals
+                    try:
+                        self.entry_producto['values'] = new_vals
+                    except Exception:
+                        pass
+                # Fijar el valor en el combobox
+                try:
+                    self.entry_producto.set(display)
+                    # Intentar seleccionar el primer índice para que ttk reconozca la selección
+                    try:
+                        self.entry_producto.current(0)
+                    except Exception:
+                        pass
+                except Exception:
+                    # Fallback a delete/insert si set falla
+                    try:
+                        self.entry_producto.delete(0, 'end')
+                        self.entry_producto.insert(0, display)
+                    except Exception:
+                        pass
+
+                # Actualizar stock mostrado
+                try:
+                    self.actualizar_stock()
+                except Exception:
+                    pass
+
+                # Cerrar la lista desplegable y pasar foco a la cantidad para agilizar la venta
+                try:
+                    # Intentar cerrar el dropdown si está abierto
+                    try:
+                        self.entry_producto.event_generate('<Escape>')
+                    except Exception:
+                        pass
+                    self.entry_cantidad.focus_set()
+                except Exception:
+                    pass
+
+        except Exception as e:
+            print(f"[WARN] Error en on_producto_enter: {e}")
+
+    def show_all_products(self, event=None):
+        """Muestra todos los productos en el combobox (útil cuando el producto no tiene código).
+        Se usa al enfocar o al hacer click en el combobox para desplegar la lista completa.
+        """
+        try:
+            vals = [
+                f"{p['nombre']} [{str(p.get('codigo') or '').strip()}]" if p.get('codigo') else p['nombre']
+                for p in getattr(self, 'products', [])
+            ]
+            if vals:
+                try:
+                    self.entry_producto['values'] = vals
+                except Exception:
+                    pass
+            # No abrir automáticamente el desplegable; el usuario puede abrirlo con la flecha o tecla.
+        except Exception:
+            pass
+
     def agregar_articulo(self):
         cliente = self.entry_cliente.get()
         producto_val = self.entry_producto.get()
@@ -227,39 +382,89 @@ class Ventas(tk.Frame):
         try:
             conn = sqlite3.connect(self.db_name)
             c= conn.cursor()
+            # Intentar extraer código desde el valor (Nombre [COD] o COD)
             codigo = self._extract_codigo(producto_val)
-            if not codigo:
-                messagebox.showerror("Error", "Seleccione o escriba el producto incluyendo su CÓDIGO, por ejemplo: 'Nombre [CODIGO]'.")
-                conn.close()
-                return
-            # Consultar nombre/precio/costo desde la primera fila con ese código (referencial)
-            c.execute("SELECT id, articulo, precio, costo, stock FROM articulos WHERE codigo = ? ORDER BY id ASC LIMIT 1", (codigo,))
-            row = c.fetchone()
-            if not row:
-                messagebox.showerror("Error", "No se encontró un artículo con ese código.")
-                conn.close()
-                return
-            art_id, art_nombre, precio, costo, _ = row
-            # Stock total sumado por código
-            c.execute("SELECT COALESCE(SUM(stock),0) FROM articulos WHERE codigo = ?", (codigo,))
-            total_stock = c.fetchone()[0] or 0
-            if cantidad > total_stock:
-                messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {int(total_stock)} unidades disponibles para el código {codigo}.")
-                conn.close()
-                return
+            used_exact_code = bool(codigo)
+
+            art_id = None
+            art_nombre = None
+            precio = None
+            costo = None
+            total_stock = 0
+
+            if codigo:
+                # Buscar por código
+                c.execute("SELECT id, articulo, precio, costo, stock FROM articulos WHERE codigo = ? ORDER BY id ASC LIMIT 1", (codigo,))
+                row = c.fetchone()
+                if not row:
+                    messagebox.showerror("Error", "No se encontró un artículo con ese código.")
+                    conn.close()
+                    return
+                art_id, art_nombre, precio, costo, _ = row
+                # Stock total sumado por código
+                c.execute("SELECT COALESCE(SUM(stock),0) FROM articulos WHERE codigo = ?", (codigo,))
+                total_stock = c.fetchone()[0] or 0
+                if cantidad > total_stock:
+                    messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {int(total_stock)} unidades disponibles para el código {codigo}.")
+                    conn.close()
+                    return
+            else:
+                # No se proporcionó código: intentar buscar por nombre exacto
+                c.execute("SELECT id, articulo, precio, costo, stock, codigo FROM articulos WHERE articulo = ? ORDER BY id ASC LIMIT 1", (producto_val,))
+                row = c.fetchone()
+                if row:
+                    art_id, art_nombre, precio, costo, stock_row, codigo_db = row
+                    codigo = str(codigo_db).strip() if codigo_db is not None else None
+                    total_stock = stock_row or 0
+                    # Si hay más stock requerido que disponible
+                    if cantidad > total_stock:
+                        messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {int(total_stock)} unidades disponibles para el producto {art_nombre}.")
+                        conn.close()
+                        return
+                else:
+                    # Intentar búsqueda parcial (no obligatoria seleccionar de la lista)
+                    try:
+                        pattern = f"%{producto_val}%"
+                        c.execute("SELECT id, articulo, precio, costo, stock, codigo FROM articulos WHERE articulo LIKE ? COLLATE NOCASE ORDER BY id ASC LIMIT 1", (pattern,))
+                        rowp = c.fetchone()
+                    except Exception:
+                        rowp = None
+                    if rowp:
+                        art_id, art_nombre, precio, costo, stock_row, codigo_db = rowp
+                        codigo = str(codigo_db).strip() if codigo_db is not None else None
+                        total_stock = stock_row or 0
+                        if cantidad > total_stock:
+                            messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {int(total_stock)} unidades disponibles para el producto {art_nombre}.")
+                            conn.close()
+                            return
+                    else:
+                        # No se encontró por nombre ni por parcial; informar al usuario
+                        messagebox.showerror("Error", "No se encontró el producto. Escriba el nombre exactamente o use el código del producto.")
+                        conn.close()
+                        return
 
             total = cantidad * precio
             total_cop = "{:,.0f}".format(total)
-            
+
             self.tre.insert("", "end", values = (self.numero_factura, cliente, art_nombre, "{:,.0f}".format(precio), cantidad, total_cop))
             # Guardar el CÓDIGO del producto para rebajar stock estrictamente por código
+            # Si no hay código, almacenamos None en la tupla (manteniendo compatibilidad)
             self.productos_seleccionados.append((self.numero_factura, cliente, art_nombre, precio, cantidad, total_cop, costo, codigo))
-            
+
             self.calcular_precio_total()
 
-            conn.close ()
-            self.entry_producto.set('')
-            self.entry_cantidad.delete(0,'end')
+            conn.close()
+            # Solo limpiar el campo producto si el usuario ingresó un código explícito (escaneo o escritura del código)
+            if used_exact_code:
+                try:
+                    self.entry_producto.set('')
+                except Exception:
+                    pass
+            # Siempre limpiar la cantidad para la siguiente entrada
+            try:
+                self.entry_cantidad.delete(0,'end')
+            except Exception:
+                pass
         
         except sqlite3.Error as e:
             print("Error al agregar articulo: ", e)
@@ -290,6 +495,15 @@ class Ventas(tk.Frame):
             conn.close()
             if resultado:
                 self.label_stock.config(text=f"Stock: {int(resultado[0])}")
+                # Cerrar dropdown del combobox de producto si está abierto y pasar foco a cantidad
+                try:
+                    try:
+                        self.entry_producto.event_generate('<Escape>')
+                    except Exception:
+                        pass
+                    self.entry_cantidad.focus_set()
+                except Exception:
+                    pass
             else:
                 self.label_stock.config(text="Stock: No encontrado.")
         except sqlite3.Error as e:
@@ -1480,88 +1694,92 @@ class Ventas(tk.Frame):
             return None
 
     def widgets(self):
-       labelframe = tk.LabelFrame(self, font="sans 12 bold", bg="#c9dbe1")
-       labelframe.place(x=25, y = 30, width = 1045,height = 180)
-       
-       label_cliente = tk.Label(labelframe, text="Cliente:", font="sans 14 bold", bg="#c9dbe1")
-       label_cliente.place(x=10, y = 11)
-       self.entry_cliente = ttk.Combobox(labelframe, font="sans 14 bold")
-       self.entry_cliente.place(x=120, y = 8, width = 260, height = 40)
-       self.entry_cliente.bind('<KeyRelease>', self.filtrar_clientes)
-       
-       label_producto = tk.Label(labelframe, text="Producto:", font="sans 14 bold", bg="#c9dbe1")
-       label_producto.place(x=10, y = 70)
-       self.entry_producto = ttk.Combobox(labelframe, font="sans 14 bold")
-       self.entry_producto.place(x=120, y = 66, width = 260, height = 40)
-       self.entry_producto.bind('<KeyRelease>', self.filtrar_productos)
-       
-       label_cantidad = tk.Label(labelframe, text="Cantidad:", font="sans 14 bold", bg="#c9dbe1")
-       label_cantidad.place(x=500,y=11)
-       self.entry_cantidad = ttk.Entry(labelframe, font="sans 14 bold")
-       self.entry_cantidad.place(x=610, y=8,width=100,height=40)      
-       
-       self.label_stock = tk.Label(labelframe, text="Stock:", font="sans 14 bold", bg="#c9dbe1")
-       self.label_stock.place(x=500,y=70)
-       self.entry_producto.bind("<<ComboboxSelected>>", self.actualizar_stock)
-       
-       label_factura = tk.Label(labelframe, text=" Número de Factura", font="sans 14 bold", bg= "#c9dbe1") 
-       label_factura.place(x=750, y = 11)
-       self.label_numero_factura = tk.Label(labelframe, text=f"{self.numero_factura}", font= "sans 14 bold", bg= "#c9dbe1")
-       self.label_numero_factura.place(x=950, y=11)
+        labelframe = tk.LabelFrame(self, font="sans 12 bold", bg="#c9dbe1")
+        labelframe.place(x=25, y=30, width=1045, height=180)
 
-       # Entry para descuento
-       label_descuento = tk.Label(labelframe, text="Descuento:", font="sans 14 bold", bg="#c9dbe1")
-       label_descuento.place(x=750, y=70)
-       self.entry_descuento = ttk.Entry(labelframe, font="sans 14 bold")
-       self.entry_descuento.place(x=870, y=70, width=100, height=40)
-       self.entry_descuento.bind('<KeyRelease>', lambda e: self.calcular_precio_total())
-       
-       btn_agregar = tk.Button(labelframe,text="Agregar artículo", font="sans 14 bold",command=self.agregar_articulo)
-       btn_agregar.place(x=90,y=120, width=200, height=40)
-       
-       btn_eliminar = tk.Button(labelframe,text="Eliminar artículo", font="sans 14 bold", command=self.eliminar_articulo)
-       btn_eliminar.place(x=310,y=120, width=200, height=40)
-       
-       btn_editar = tk.Button(labelframe,text="Editar artículos", font="sans 14 bold", command=self.editar_articulo)
-       btn_editar.place(x=530,y=120, width=200, height=40)
-       
-       btn_limpiar = tk.Button(labelframe,text="Limpiar lista", font="sans 14 bold", command=self.limpiar_lista)
-       btn_limpiar.place(x=750,y=120, width=200, height=40)
-       
-       treFrame = tk.Frame(self, bg="white")
-       treFrame.place(x=70, y=220 , width=950,height=300) 
-       
-       scrol_y = ttk.Scrollbar(treFrame)
-       scrol_y.pack(side=RIGHT, fill=Y)
-       
-       scrol_x = ttk.Scrollbar(treFrame , orient=HORIZONTAL)
-       scrol_x.pack(side=BOTTOM, fill=X)
-       
-       self.tre = ttk.Treeview(treFrame, yscrollcommand=scrol_y.set, xscrollcommand=scrol_x.set, height=40, columns=("Factura","Cliente","Producto","Precio","Cantidad","Total"), show="headings")
-       self.tre.pack(expand=True, fill=BOTH)
-       
-       scrol_y.config(command=self.tre.yview)
-       scrol_x.config(command=self.tre.xview)
-       
-       self.tre.heading("Factura", text="Factura")
-       self.tre.heading("Cliente", text="Cliente")
-       self.tre.heading("Producto", text="Producto")
-       self.tre.heading("Precio", text="Precio")
-       self.tre.heading("Cantidad", text="Cantidad")
-       self.tre.heading("Total", text="Total")
-       
-       self.tre.column("Factura",width=60, anchor="center")
-       self.tre.column("Cliente",width=120, anchor="center")
-       self.tre.column("Producto",width=120, anchor="center")
-       self.tre.column("Precio",width=80, anchor="center")
-       self.tre.column("Cantidad",width=80, anchor="center")
-       self.tre.column("Total",width=80, anchor="center")
+        label_cliente = tk.Label(labelframe, text="Cliente:", font="sans 14 bold", bg="#c9dbe1")
+        label_cliente.place(x=10, y=11)
+        self.entry_cliente = ttk.Combobox(labelframe, font="sans 14 bold")
+        self.entry_cliente.place(x=120, y=8, width=260, height=40)
+        self.entry_cliente.bind('<KeyRelease>', self.filtrar_clientes)
 
-       self.label_precio_total =tk.Label(self, text="Precio a pagar: $ 0",font="sans 18 bold", bg="#c9dbe1")
-       self.label_precio_total.place(x=680, y=550)
-       
-       boton_pagar = tk.Button(self, text="Pagar", font="sans 14 bold", command=self.realizar_pago)
-       boton_pagar.place(x=70, y=550, width=180, height=40)
-       
-       boton_ver_ventas = tk.Button(self, text="Ver ventas realizadas", font="sans 14 bold", command=self.ver_ventas_realizadas)
-       boton_ver_ventas.place(x=290, y=550, width=210, height=40)
+        label_producto = tk.Label(labelframe, text="Producto:", font="sans 14 bold", bg="#c9dbe1")
+        label_producto.place(x=10, y=70)
+        self.entry_producto = ttk.Combobox(labelframe, font="sans 14 bold")
+        self.entry_producto.place(x=120, y=66, width=260, height=40)
+        self.entry_producto.bind('<KeyRelease>', self.filtrar_productos)
+        # Manejar Enter (retorno) para lectores de código de barras que envían Enter al terminar
+        self.entry_producto.bind('<Return>', self.on_producto_enter)
+    # Permitir salir del combobox sin forzar selección: cancelar timers al perder foco
+        self.entry_producto.bind('<FocusOut>', self._cancel_barcode_timers)
+
+        label_cantidad = tk.Label(labelframe, text="Cantidad:", font="sans 14 bold", bg="#c9dbe1")
+        label_cantidad.place(x=500, y=11)
+        self.entry_cantidad = ttk.Entry(labelframe, font="sans 14 bold")
+        self.entry_cantidad.place(x=610, y=8, width=100, height=40)
+
+        self.label_stock = tk.Label(labelframe, text="Stock:", font="sans 14 bold", bg="#c9dbe1")
+        self.label_stock.place(x=500, y=70)
+        self.entry_producto.bind("<<ComboboxSelected>>", self.actualizar_stock)
+
+        label_factura = tk.Label(labelframe, text=" Número de Factura", font="sans 14 bold", bg="#c9dbe1")
+        label_factura.place(x=750, y=11)
+        self.label_numero_factura = tk.Label(labelframe, text=f"{self.numero_factura}", font="sans 14 bold", bg="#c9dbe1")
+        self.label_numero_factura.place(x=950, y=11)
+
+        # Entry para descuento
+        label_descuento = tk.Label(labelframe, text="Descuento:", font="sans 14 bold", bg="#c9dbe1")
+        label_descuento.place(x=750, y=70)
+        self.entry_descuento = ttk.Entry(labelframe, font="sans 14 bold")
+        self.entry_descuento.place(x=870, y=70, width=100, height=40)
+        self.entry_descuento.bind('<KeyRelease>', lambda e: self.calcular_precio_total())
+
+        btn_agregar = tk.Button(labelframe, text="Agregar artículo", font="sans 14 bold", command=self.agregar_articulo)
+        btn_agregar.place(x=90, y=120, width=200, height=40)
+
+        btn_eliminar = tk.Button(labelframe, text="Eliminar artículo", font="sans 14 bold", command=self.eliminar_articulo)
+        btn_eliminar.place(x=310, y=120, width=200, height=40)
+
+        btn_editar = tk.Button(labelframe, text="Editar artículos", font="sans 14 bold", command=self.editar_articulo)
+        btn_editar.place(x=530, y=120, width=200, height=40)
+
+        btn_limpiar = tk.Button(labelframe, text="Limpiar lista", font="sans 14 bold", command=self.limpiar_lista)
+        btn_limpiar.place(x=750, y=120, width=200, height=40)
+
+        treFrame = tk.Frame(self, bg="white")
+        treFrame.place(x=70, y=220, width=950, height=300)
+
+        scrol_y = ttk.Scrollbar(treFrame)
+        scrol_y.pack(side=RIGHT, fill=Y)
+
+        scrol_x = ttk.Scrollbar(treFrame, orient=HORIZONTAL)
+        scrol_x.pack(side=BOTTOM, fill=X)
+
+        self.tre = ttk.Treeview(treFrame, yscrollcommand=scrol_y.set, xscrollcommand=scrol_x.set, height=40, columns=("Factura","Cliente","Producto","Precio","Cantidad","Total"), show="headings")
+        self.tre.pack(expand=True, fill=BOTH)
+
+        scrol_y.config(command=self.tre.yview)
+        scrol_x.config(command=self.tre.xview)
+
+        self.tre.heading("Factura", text="Factura")
+        self.tre.heading("Cliente", text="Cliente")
+        self.tre.heading("Producto", text="Producto")
+        self.tre.heading("Precio", text="Precio")
+        self.tre.heading("Cantidad", text="Cantidad")
+        self.tre.heading("Total", text="Total")
+
+        self.tre.column("Factura", width=60, anchor="center")
+        self.tre.column("Cliente", width=120, anchor="center")
+        self.tre.column("Producto", width=120, anchor="center")
+        self.tre.column("Precio", width=80, anchor="center")
+        self.tre.column("Cantidad", width=80, anchor="center")
+        self.tre.column("Total", width=80, anchor="center")
+
+        self.label_precio_total = tk.Label(self, text="Precio a pagar: $ 0", font="sans 18 bold", bg="#c9dbe1")
+        self.label_precio_total.place(x=680, y=550)
+
+        boton_pagar = tk.Button(self, text="Pagar", font="sans 14 bold", command=self.realizar_pago)
+        boton_pagar.place(x=70, y=550, width=180, height=40)
+
+        boton_ver_ventas = tk.Button(self, text="Ver ventas realizadas", font="sans 14 bold", command=self.ver_ventas_realizadas)
+        boton_ver_ventas.place(x=290, y=550, width=210, height=40)
