@@ -256,8 +256,10 @@ class Ventas(tk.Frame):
 
     def on_producto_enter(self, event=None):
         """Detecta cuando se ingresa un código (p. ej. por escáner) en `entry_producto`.
-        Si el valor coincide con el campo `codigo` de algún producto, asigna al Combobox
-        el texto "Nombre [CODIGO]", actualiza el stock y mueve el foco a la cantidad.
+        Si el valor coincide con el campo `codigo` de algún producto, lo agrega
+        directamente al Treeview con la cantidad indicada en el campo "Cantidad"
+        (si es válida); de lo contrario usa 1. Mantiene el foco en el campo de
+        producto para permitir escaneos consecutivos rápidos.
         """
         try:
             # Cancelar timers pendientes para evitar que el filtrado posterior sobreescriba el valor
@@ -294,54 +296,77 @@ class Ventas(tk.Frame):
 
             if matched:
                 code = str(matched.get('codigo') or '').strip()
-                display = f"{matched['nombre']} [{code}]" if code else matched['nombre']
-                # Asegurar que el valor esté en la lista de opciones y fijarlo como seleccionado
+                # Determinar cantidad: si el usuario digitó una válida, usarla; si no, 1
+                qty_text = None
                 try:
-                    current_vals = list(self.entry_producto['values']) if self.entry_producto['values'] else []
+                    qty_text = self.entry_cantidad.get()
                 except Exception:
-                    current_vals = []
-                # Insertar display al inicio si no existe
-                if display not in current_vals:
-                    new_vals = [display] + current_vals
-                    try:
-                        self.entry_producto['values'] = new_vals
-                    except Exception:
-                        pass
-                # Fijar el valor en el combobox
+                    qty_text = None
                 try:
-                    self.entry_producto.set(display)
-                    # Intentar seleccionar el primer índice para que ttk reconozca la selección
-                    try:
-                        self.entry_producto.current(0)
-                    except Exception:
-                        pass
+                    cantidad = int(qty_text) if qty_text and str(qty_text).isdigit() and int(qty_text) > 0 else 1
                 except Exception:
-                    # Fallback a delete/insert si set falla
+                    cantidad = 1
+                # Agregar de inmediato por código
+                try:
+                    self._agregar_articulo_por_codigo(code, cantidad)
+                except Exception as _e:
+                    print(f"[WARN] No se pudo agregar por código {code}: {_e}")
+                # Limpiar el campo de producto y mantener el foco para el siguiente escaneo
+                try:
+                    self.entry_producto.set('')
+                except Exception:
                     try:
                         self.entry_producto.delete(0, 'end')
-                        self.entry_producto.insert(0, display)
                     except Exception:
                         pass
-
-                # Actualizar stock mostrado
                 try:
-                    self.actualizar_stock()
-                except Exception:
-                    pass
-
-                # Cerrar la lista desplegable y pasar foco a la cantidad para agilizar la venta
-                try:
-                    # Intentar cerrar el dropdown si está abierto
-                    try:
-                        self.entry_producto.event_generate('<Escape>')
-                    except Exception:
-                        pass
-                    self.entry_cantidad.focus_set()
+                    self.entry_producto.focus_set()
                 except Exception:
                     pass
 
         except Exception as e:
             print(f"[WARN] Error en on_producto_enter: {e}")
+
+    def _agregar_articulo_por_codigo(self, codigo: str, cantidad: int = 1):
+        """Agrega directamente un artículo al Treeview usando su código de barras.
+        - Respeta validación de cliente seleccionado.
+        - Verifica stock total por código.
+        - Actualiza self.productos_seleccionados y el total a pagar.
+        """
+        if not codigo:
+            return
+        cliente = self.entry_cliente.get()
+        if not cliente:
+            messagebox.showerror("Error", "Por favor, seleccione un cliente antes de escanear.")
+            return
+        try:
+            conn = sqlite3.connect(self.db_name)
+            c = conn.cursor()
+            c.execute("SELECT id, articulo, precio, costo, stock FROM articulos WHERE codigo = ? ORDER BY id ASC LIMIT 1", (codigo,))
+            row = c.fetchone()
+            if not row:
+                messagebox.showerror("Error", "No se encontró un artículo con ese código.")
+                conn.close()
+                return
+            art_id, art_nombre, precio, costo, _ = row
+            # Stock total por código
+            c.execute("SELECT COALESCE(SUM(stock),0) FROM articulos WHERE codigo = ?", (codigo,))
+            total_stock = c.fetchone()[0] or 0
+            if cantidad > total_stock:
+                messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {int(total_stock)} unidades disponibles para el código {codigo}.")
+                conn.close()
+                return
+            total = cantidad * float(precio)
+            total_cop = "{:,.0f}".format(total)
+            # Insertar al Treeview
+            self.tre.insert("", "end", values=(self.numero_factura, cliente, art_nombre, "{:,.0f}".format(precio), cantidad, total_cop))
+            # Registrar internamente, preservando el código
+            self.productos_seleccionados.append((self.numero_factura, cliente, art_nombre, float(precio), cantidad, total_cop, float(costo), codigo))
+            # Recalcular total
+            self.calcular_precio_total()
+            conn.close()
+        except sqlite3.Error as e:
+            print("Error al agregar por código: ", e)
 
     def show_all_products(self, event=None):
         """Muestra todos los productos en el combobox (útil cuando el producto no tiene código).
