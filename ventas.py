@@ -4,15 +4,12 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 import datetime
 import threading
-from reportlab.lib.pagesizes import letter
-from reportlab.lib import colors
-from reportlab.lib.units import inch
-from reportlab.pdfgen import canvas
 
 import sys
 import os
 from PIL import Image, ImageTk
 from Smart_data_syncro.utils import rutas
+from Smart_data_syncro.pos_ticket import generar_ticket_pdf
 from Smart_data_syncro.services.articulo_service import ArticuloService
 from Smart_data_syncro.services.cliente_service import ClienteService
 from Smart_data_syncro.services.usuario_service import UsuarioService
@@ -1077,8 +1074,7 @@ class Ventas(tk.Frame):
             # Usar ruta absoluta para el archivo PDF, anclada a la carpeta del proyecto (no al cwd)
             factura_path = rutas(f"facturas/factura_{num_factura}.pdf")
             os.makedirs(os.path.dirname(factura_path), exist_ok=True)
-            c = canvas.Canvas(factura_path, pagesize=letter)
-            
+
             # Obtener información de la empresa
             try:
                 info_empresa = self.empresa_service.obtener()
@@ -1102,27 +1098,7 @@ class Ventas(tk.Frame):
                 empresa_email = "Error al cargar datos"
                 empresa_nit = "Error al cargar datos"
 
-            c.setFont("Helvetica-Bold", 30)
-            c.setFillColor(colors.black)
-            c.drawCentredString(300, 770, "Factura de Venta")
-
-            # Información de la empresa y datos de la factura con mejor espaciado
-            y = 740
-            c.setFillColor(colors.black)
-            c.setFont("Helvetica-Bold", 20)
-            c.drawString(50, y, f"Empresa: {empresa_nombre}")
-            y -= 25
-            c.setFont("Helvetica", 16)
-            c.drawString(50, y, f"Dirección: {empresa_direccion}")
-            y -= 20
-            c.drawString(50, y, f"Teléfono: {empresa_telefono}")
-            y -= 20
-            c.drawString(50, y, f"Email: {empresa_email}")
-            y -= 20
-            c.drawString(50, y, f"NIT: {empresa_nit}")
-            y -= 25
-
-            # Cliente y método de pago en la misma línea, debajo del NIT
+            # Cliente y método de pago
             try:
                 metodo_result = self.venta_service.obtener_metodo_pago_banco(num_factura)
                 metodo = metodo_result[0] if metodo_result and metodo_result[0] else "No especificado"
@@ -1131,64 +1107,10 @@ class Ventas(tk.Frame):
                 metodo = "No especificado"
                 banco_val = banco if banco else getattr(self, 'banco_pago', None)
 
-            # Mostrar cliente y método de pago
-            c.setFont("Helvetica-Bold", 14)
             cliente_str = cliente if cliente else "No especificado"
             metodo_str = str(metodo).upper() if metodo else "NO ESPECIFICADO"
-            c.drawString(50, y, f"Cliente: {cliente_str}")
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(320, y, f"Método de Pago: {metodo_str}")
-            # Mostrar banco si hay transferencia en el método (incluye casos mixtos)
-            if ("TRANSFERENCIA" in metodo_str) and banco_val:
-                c.setFont("Helvetica-Bold", 14)
-                banco_str = banco_val if banco_val else "No especificado"
-                c.drawString(50, y-20, f"Banco: {banco_str}")
-                y -= 20
-            # Desglose de pagos cuando hay mixto o si existe al menos uno informado
-            if (efectivo_pagado and efectivo_pagado > 0) or (transferencia_pagada and transferencia_pagada > 0):
-                if efectivo_pagado and efectivo_pagado > 0:
-                    c.drawString(50, y-20, f"Pago EFECTIVO: ${efectivo_pagado:,.0f}")
-                    y -= 20
-                if transferencia_pagada and transferencia_pagada > 0:
-                    c.drawString(50, y-20, f"Pago TRANSFERENCIA: ${transferencia_pagada:,.0f}")
-                    y -= 20
-            y -= 25
 
-            # Factura N° y Fecha en la misma línea, bien espaciados
-            c.setFont("Helvetica-Bold", 16)
-            c.drawString(50, y, f"Factura Núm.°: {num_factura}")
-            c.drawString(300, y, f"Fecha: {datetime.datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
-            y -= 25
-
-            # Descripción de productos antes de la tabla
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(50, y, "Descripción de productos:")
-            y -= 15
-
-            # Ajustar y_offset dinámicamente para la tabla de productos
-            y_offset = y
-            c.setLineWidth(0.2)
-            c.line(50, y_offset, 550, y_offset)
-            # Encabezados de la tabla
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(55, y_offset - 15, "Producto")
-            c.drawString(240, y_offset - 15, "Cantidad")
-            c.drawString(320, y_offset - 15, "Precio Unit.")
-            c.drawString(400, y_offset - 15, "Total")
-            c.line(50, y_offset - 20, 550, y_offset - 20)
-            y_offset -= 35
-            c.setFont("Helvetica", 10)
-            c.setLineWidth(1)
-            # Líneas verticales de la tabla (ajustadas a la altura real)
-            tabla_top = y_offset + 50  # 50 es la altura desde el encabezado hasta la línea superior
-            tabla_bottom = y_offset + 15  # para que las líneas verticales no queden muy cortas
-            c.line(50, tabla_top, 50, y_offset + 15)
-            c.line(235, tabla_top, 235, y_offset + 15)
-            c.line(315, tabla_top, 315, y_offset + 15)
-            c.line(395, tabla_top, 395, y_offset + 15)
-            c.line(550, tabla_top, 550, y_offset + 15)
-
-            # Obtener productos de la base de datos si es una factura existente
+            # Obtener productos: de la base si es una factura existente, o del carrito actual
             if num_factura != self.numero_factura:
                 try:
                     productos_factura = self.venta_service.listar_para_pdf(num_factura)
@@ -1203,59 +1125,44 @@ class Ventas(tk.Frame):
                     # item = (factura, cliente, producto, precio, cantidad, total_cop, costo)
                     productos_factura.append((item[2], item[4], item[3], item[5]))
 
-            c.setFont("Helvetica", 14)  # Aumentar tamaño de letra para los productos
+            items_ticket = []
             for producto, cantidad, precio, total in productos_factura:
-                # Limitar el tamaño del nombre del producto
-                if len(producto) > 25:
-                    producto = producto[:22] + "..."
-
-                # Asegurar que los valores estén en formato correcto
                 if isinstance(precio, str):
                     precio = float(precio.replace(",", "").replace(" ", ""))
                 if isinstance(total, str):
-                    total = total.replace(",", "").replace(" ", "")
-                
-                c.drawString(55, y_offset, producto)
-                c.drawString(250, y_offset, str(cantidad))
-                c.drawString(320, y_offset, f"${precio:,.0f}")
-                c.drawString(400, y_offset, f"${float(total):,.0f}")
-                y_offset -= 25  # Aumentar el espacio entre líneas
-                
-            c.line(50, y_offset + 10, 550, y_offset + 10)
-            y_offset -= 10
-            
-            # Total
-            c.setFont("Helvetica-Bold", 12)
-            c.setFillColor(colors.black)
-            c.drawString(300, y_offset, f"Total bruto: ${total_venta:,.0f}")
-            y_offset -= 20
-            # Mostrar descuento si aplica
+                    total = float(total.replace(",", "").replace(" ", ""))
+                items_ticket.append((producto, cantidad, precio, total))
+
+            encabezado = [
+                f"Factura: {num_factura}",
+                f"Fecha: {datetime.datetime.now().strftime('%d-%m-%Y %H:%M:%S')}",
+                f"Cliente: {cliente_str}",
+                f"Método de pago: {metodo_str}",
+            ]
+            if ("TRANSFERENCIA" in metodo_str) and banco_val:
+                encabezado.append(f"Banco: {banco_val}")
+
+            resumen = [(f"Total bruto: ${total_venta:,.0f}", False)]
             if descuento and descuento > 0:
-                c.setFont("Helvetica-Bold", 12)
-                c.setFillColor(colors.red)
-                c.drawString(300, y_offset, f"Descuento: -${descuento:,.0f}")
-                y_offset -= 20
-            # Total neto (con descuento)
+                resumen.append((f"Descuento: -${descuento:,.0f}", False))
             total_neto = max(total_venta - descuento, 0)
-            c.setFont("Helvetica-Bold", 14)
-            c.setFillColor(colors.black)
-            c.drawString(300, y_offset, f"Total a pagar: ${total_neto:,.0f}")
-            y_offset -= 30
-            c.line(50, y_offset, 550, y_offset)
-            
-            c.setFont("Helvetica-Bold", 12)
-            c.drawCentredString(300, y_offset - 20, "¡Gracias por su compra!")
-            
-            # Términos y condiciones
-            y_offset -= 50
-            c.setFont("Helvetica", 16)
-            c.drawString(50, y_offset, "Términos y Condiciones:")
-            c.drawString(50, y_offset - 12, "1. Los productos no tienen cambio ni devolución")
-            c.drawString(50, y_offset - 24, "2. Conserve la factura para cualquier reclamo")
-            c.drawString(50, y_offset - 36, "3. El plazo de reclamación es de 30 días")
-            
-            c.save()
-            
+            resumen.append((f"TOTAL A PAGAR: ${total_neto:,.0f}", True))
+            if efectivo_pagado and efectivo_pagado > 0:
+                resumen.append((f"Pago efectivo: ${efectivo_pagado:,.0f}", False))
+            if transferencia_pagada and transferencia_pagada > 0:
+                resumen.append((f"Pago transferencia: ${transferencia_pagada:,.0f}", False))
+
+            empresa = {
+                "nombre": empresa_nombre, "direccion": empresa_direccion,
+                "telefono": empresa_telefono, "email": empresa_email, "nit": empresa_nit,
+            }
+            pie = [
+                "¡Gracias por su compra!",
+                "Los productos no tienen cambio ni devolución.",
+                "Conserve este ticket para cualquier reclamo (30 días).",
+            ]
+            generar_ticket_pdf(factura_path, empresa, "FACTURA DE VENTA", encabezado, items_ticket, resumen, pie)
+
             # Imprimir o abrir el PDF
             if os.path.exists(factura_path):
                 try:

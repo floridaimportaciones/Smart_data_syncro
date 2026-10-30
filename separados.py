@@ -4,20 +4,16 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 import datetime
 import threading
-from reportlab.lib.pagesizes import letter
-from reportlab.lib import colors
-from reportlab.lib.units import inch
-from reportlab.pdfgen import canvas
 import sys
 import os
 from PIL import Image, ImageTk
 from Smart_data_syncro.utils import rutas
+from Smart_data_syncro.pos_ticket import generar_ticket_pdf
 from Smart_data_syncro.services.articulo_service import ArticuloService
 from Smart_data_syncro.services.cliente_service import ClienteService
 from Smart_data_syncro.services.usuario_service import UsuarioService
 from Smart_data_syncro.services.separado_service import SeparadoService
 from Smart_data_syncro.services.empresa_service import EmpresaService
-import time
 
 class Separados(tk.Frame):
 
@@ -387,52 +383,30 @@ class Separados(tk.Frame):
 
             nombre_archivo = rutas(f"facturas/factura_separado_{num_factura}.pdf")
             os.makedirs(os.path.dirname(nombre_archivo), exist_ok=True)
-            c = canvas.Canvas(nombre_archivo, pagesize=letter)
 
             # Obtener información de la empresa
             info_empresa = self.empresa_service.obtener()
             if info_empresa:
-                empresa_nombre = info_empresa.nombre
-                empresa_direccion = info_empresa.direccion
-                empresa_telefono = info_empresa.telefono
-                empresa_email = info_empresa.email
+                empresa = {
+                    "nombre": info_empresa.nombre, "direccion": info_empresa.direccion,
+                    "telefono": info_empresa.telefono, "email": info_empresa.email,
+                    "nit": info_empresa.nit,
+                }
             else:
-                empresa_nombre = "Empresa no configurada"
-                empresa_direccion = "Dirección no configurada"
-                empresa_telefono = "Teléfono no configurado"
-                empresa_email = "Email no configurado"
+                empresa = {
+                    "nombre": "Empresa no configurada", "direccion": "Dirección no configurada",
+                    "telefono": "Teléfono no configurado", "email": "Email no configurado",
+                }
 
-            # Encabezado con información de la empresa
-            c.setFont("Helvetica-Bold", 30)
-            c.drawString(50, 780, empresa_nombre)
-            c.setFont("Helvetica", 12)
-            c.drawString(50, 760, f"Dirección: {empresa_direccion}")
-            c.drawString(50, 740, f"Teléfono: {empresa_telefono}")
-            c.drawString(50, 720, f"Email: {empresa_email}")
+            encabezado = [
+                f"Factura: {num_factura}",
+                f"Fecha: {datetime.datetime.now().strftime('%d-%m-%Y %H:%M:%S')}",
+                f"Cliente: {cliente}",
+                f"Método de pago: {metodo_pago}{' - ' + banco if banco else ''}",
+            ]
 
-            # Información del separado
-            c.setFont("Helvetica-Bold", 24)
-            c.drawString(50, 690, "Factura de Separado")
-            c.setFont("Helvetica", 20)
-            c.drawString(50, 670, f"Factura N°: {num_factura}")
-            c.drawString(250, 670, f"Fecha: {datetime.datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
-            c.drawString(50, 650, f"Cliente: {cliente}")
-            c.drawString(50, 630, f"Método de pago: {metodo_pago}{' - ' + banco if banco else ''}")
-            c.drawString(50, 670, f"Total venta: ${total_venta:,.0f}")
-            c.drawString(50, 650, f"Total abonado: ${total_abonado:,.0f}")
-            c.drawString(50, 630, f"Deuda restante: ${deuda_restante:,.0f}")
-            c.drawString(50, 610, "Detalle de productos:")
-            y = 590
-            c.setFont("Helvetica-Bold", 20)
-            c.drawString(50, y, "Producto")
-            c.drawString(200, y, "Cantidad")
-            c.drawString(300, y, "Precio")
-            c.drawString(400, y, "Total")
-            c.setFont("Helvetica", 10)
-            y -= 30
+            items_ticket = []
             for prod, cant, precio, total in productos_factura:
-                c.drawString(50, y, str(prod))
-                c.drawString(200, y, str(cant))
                 try:
                     precio_float = float(str(precio).replace(",", "").replace(" ", ""))
                 except Exception:
@@ -441,23 +415,16 @@ class Separados(tk.Frame):
                     total_float = float(str(total).replace(",", "").replace(" ", ""))
                 except Exception:
                     total_float = 0
-                c.drawString(300, y, f"${precio_float:,.0f}")
-                c.drawString(400, y, f"${total_float:,.0f}")
-                y -= 20
-                if y < 100:
-                    c.showPage()
-                    y = 700
-            # Al final del detalle de productos, mostrar el total bruto y total a pagar
-            if y < 100:
-                c.showPage()
-                y = 700
-            y -= 20
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(50, y, f"Total bruto: ${total_venta:,.0f}")
-            y -= 25
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(50, y, f"Total a pagar: ${(deuda_restante + total_abonado):,.0f}")
-            c.save()
+                items_ticket.append((prod, cant, precio_float, total_float))
+
+            resumen_ticket = [
+                (f"Total venta: ${total_venta:,.0f}", False),
+                (f"Total abonado: ${total_abonado:,.0f}", False),
+                (f"Deuda restante: ${deuda_restante:,.0f}", True),
+            ]
+            pie = ["Conserve este ticket, es su comprobante de separado."]
+
+            generar_ticket_pdf(nombre_archivo, empresa, "FACTURA DE SEPARADO", encabezado, items_ticket, resumen_ticket, pie)
         except Exception as e:
             print(f"Error generando factura de separado: {e}")
     
