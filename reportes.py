@@ -1,4 +1,3 @@
-import sqlite3
 import shutil
 from tkinter import *
 import tkinter as tk
@@ -13,7 +12,9 @@ import locale
 from openpyxl import Workbook
 import os
 import sys
-from Smart_data_syncro.utils import rutas
+from Smart_data_syncro.utils import rutas, imagen_segura
+from Smart_data_syncro.services.venta_service import VentaService
+from Smart_data_syncro.services.articulo_service import ArticuloService
 
 # Configurar el formato de moneda para español
 locale.setlocale(locale.LC_ALL, 'es_ES')
@@ -21,31 +22,31 @@ locale.setlocale(locale.LC_ALL, 'es_ES')
 
 class Reportes(tk.Frame):
 
-    db_name = 'database.db'
-
     def __init__(self, padre):
         super().__init__(padre)
+        self.venta_service = VentaService()
+        self.articulo_service = ArticuloService()
         self.widgets()
 
     def widgets(self):
 
-        self.imagen_reporte_ventas_totales = Image.open(rutas("imagenes/reporte.png"))
+        self.imagen_reporte_ventas_totales = imagen_segura(rutas("imagenes/reporte.png"))
         imagen_resize = self.imagen_reporte_ventas_totales.resize((125, 125))
         imagen_tk = ImageTk.PhotoImage(imagen_resize)
 
-        self.imagen_reportes_ganancias = Image.open(rutas("imagenes/reporte1.png"))
+        self.imagen_reportes_ganancias = imagen_segura(rutas("imagenes/reporte1.png"))
         imagen_resize_ganancias = self.imagen_reportes_ganancias.resize((125, 125))
         imagen_tk_ganancias = ImageTk.PhotoImage(imagen_resize_ganancias)
 
-        self.imagen_reportes_ventas_por_mes = Image.open(rutas("imagenes/reporte2.png"))
+        self.imagen_reportes_ventas_por_mes = imagen_segura(rutas("imagenes/reporte2.png"))
         imagen_resize_ventas_por_mes = self.imagen_reportes_ventas_por_mes.resize((125, 125))
         imagen_tk_ventas_por_mes = ImageTk.PhotoImage(imagen_resize_ventas_por_mes)
 
-        self.imagen_grafico_ganancias_por_mes = Image.open(rutas("imagenes/reporte3.png"))
+        self.imagen_grafico_ganancias_por_mes = imagen_segura(rutas("imagenes/reporte3.png"))
         imagen_resize_grafico = self.imagen_grafico_ganancias_por_mes.resize((125, 125))
         imagen_tk_grafico = ImageTk.PhotoImage(imagen_resize_grafico)
 
-        self.imagen_exportar_excel = Image.open(rutas("imagenes/excel.png"))
+        self.imagen_exportar_excel = imagen_segura(rutas("imagenes/excel.png"))
         imagen_resize_exportar_excel = self.imagen_exportar_excel.resize((125, 125))
         imagen_tk_exportar_excel = ImageTk.PhotoImage(imagen_resize_exportar_excel)
 
@@ -89,7 +90,7 @@ class Reportes(tk.Frame):
         top.focus_set()
         top.lift()
 
-        imagen_filtrar = Image.open(rutas("imagenes/filtrar.png")).resize((30, 30))
+        imagen_filtrar = imagen_segura(rutas("imagenes/filtrar.png")).resize((30, 30))
         imagen_filtrar = ImageTk.PhotoImage(imagen_filtrar)
 
         lbl_titulo = tk.Label(top, text="Reporte de ventas totales", font=("sans 26 bold"), bg="#c9dbe1")
@@ -131,24 +132,16 @@ class Reportes(tk.Frame):
                 fecha_ini = fecha_desde.get_date()
                 fecha_fin = fecha_hasta.get_date()
 
-                conn = sqlite3.connect(self.db_name)
-                cursor = conn.cursor()
-                cursor.execute("""
-                SELECT SUM(cantidad), SUM(total)
-                FROM ventas
-                WHERE fecha BETWEEN ? AND ?
-                """, (fecha_ini, fecha_fin))
-                resultado = cursor.fetchone()
-                conn.close()
+                cantidad, total = self.venta_service.totales_por_rango(fecha_ini, fecha_fin)
 
                 for fila in self.tree.get_children():
                     self.tree.delete(fila)
 
-                if resultado and resultado[0] is not None:
-                    self.tree.insert("", "end", values=(resultado[0], f"${resultado[1]:,.2f}"))
+                if cantidad is not None:
+                    self.tree.insert("", "end", values=(cantidad, f"${total:,.2f}"))
                 else:
                     messagebox.showinfo("Sin datos", "No se encontraron ventas en ese rango de fechas.")
-            except sqlite3.Error as e:
+            except Exception as e:
                 messagebox.showerror("Error", f"Error al consultar la base de datos: {e}")
 
         btn_filtrar = tk.Button(frame_filtro, text="  Filtrar", font="sans 14 bold", command=filtrar)
@@ -173,7 +166,7 @@ class Reportes(tk.Frame):
         top.focus_set()
         top.lift()
 
-        imagen_filtrar = Image.open(rutas("imagenes/filtrar.png")).resize((30, 30))
+        imagen_filtrar = imagen_segura(rutas("imagenes/filtrar.png")).resize((30, 30))
         imagen_filtrar = ImageTk.PhotoImage(imagen_filtrar)
 
         lbl_titulo = tk.Label(top, text="Reporte de ganancias", font=("sans 26 bold"), bg="#c9dbe1")
@@ -223,25 +216,17 @@ class Reportes(tk.Frame):
                 fecha_ini = fecha_desde.get_date()
                 fecha_fin = fecha_hasta.get_date()
 
-                conn = sqlite3.connect(self.db_name)
-                cursor = conn.cursor()                
-                cursor.execute("""
-                SELECT SUM(total) - SUM(cantidad * costo) as ganancias_totales
-                FROM ventas
-                WHERE fecha BETWEEN ? AND ?
-                """, (fecha_ini, fecha_fin))
-                resultado = cursor.fetchone()
-                conn.close()
+                ganancias = self.venta_service.ganancias_por_rango(fecha_ini, fecha_fin)
 
                 # Limpiar tabla
                 for item in self.tree.get_children():
                     self.tree.delete(item)
 
-                if resultado and resultado[0] is not None:
-                    self.tree.insert("", "end", values=(f"${resultado[0]:,.2f}",))
+                if ganancias is not None:
+                    self.tree.insert("", "end", values=(f"${ganancias:,.2f}",))
                 else:
                     messagebox.showinfo("Sin datos", "No se encontraron ganancias en ese rango de fechas.")
-            except sqlite3.Error as e:
+            except Exception as e:
                 messagebox.showerror("Error", f"Error al consultar la base de datos: {e}")
 
         # Texto explicativo
@@ -269,20 +254,8 @@ class Reportes(tk.Frame):
             top.grab_set()
             
             # Consultar datos de ventas por mes
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT strftime('%m', fecha) as mes,
-                       SUM(total) as total_ventas
-                FROM ventas
-                WHERE strftime('%Y', fecha) = ?
-                GROUP BY strftime('%m', fecha)
-                ORDER BY mes
-            """, (str(año),))
-            
-            resultados = cursor.fetchall()
-            conn.close()
-            
+            resultados = self.venta_service.ventas_por_mes(año)
+
             # Preparar datos para el gráfico
             meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
                     'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
@@ -325,9 +298,9 @@ class Reportes(tk.Frame):
             
         except ValueError:
             messagebox.showerror("Error", "Por favor ingrese un año válido")
-        except sqlite3.Error as e:
+        except Exception as e:
             messagebox.showerror("Error", f"Error al consultar la base de datos: {e}")
-    
+
     def grafico_ganancias_por_mes(self):
         # Solicitar el año
         año = simpledialog.askstring("Año", "Ingrese el año para filtrar:", parent=self)
@@ -347,22 +320,8 @@ class Reportes(tk.Frame):
             top.grab_set()
             
             # Consultar datos por mes
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT strftime('%m', fecha) as mes,
-                       SUM(cantidad * costo) as total_costos,
-                       SUM(total) as total_ventas,
-                       SUM(total) - SUM(cantidad * costo) as ganancias
-                FROM ventas
-                WHERE strftime('%Y', fecha) = ?
-                GROUP BY strftime('%m', fecha)
-                ORDER BY mes
-            """, (str(año),))
-            
-            resultados = cursor.fetchall()
-            conn.close()
-            
+            resultados = self.venta_service.ventas_y_ganancias_por_mes(año)
+
             # Preparar datos para el gráfico
             meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
                     'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
@@ -420,9 +379,9 @@ class Reportes(tk.Frame):
             
         except ValueError:
             messagebox.showerror("Error", "Por favor ingrese un año válido")
-        except sqlite3.Error as e:
-            messagebox.showerror("Error", f"Error al consultar la base de datos: {e}")    
-        
+        except Exception as e:
+            messagebox.showerror("Error", f"Error al consultar la base de datos: {e}")
+
     def mostrar_ventana_exportar(self):
         ventana_exportar = tk.Toplevel(self)
         ventana_exportar.title("Exportar a Excel")
@@ -449,32 +408,26 @@ class Reportes(tk.Frame):
             return
 
         try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-
             libro = Workbook()
             hoja = libro.active
 
             if tipo =="inventario":
                 hoja.title = "Inventario"
-                cursor.execute("SELECT id, articulo, precio, costo, codigo,stock, stock_minimo, sucursal   FROM articulos")
-                datos = cursor.fetchall()
+                datos = [
+                    (a.id, a.articulo, a.precio, a.costo, a.codigo, a.stock, a.stock_minimo,
+                     a.sucursal_obj.nombre if a.sucursal_obj else "")
+                    for a in self.articulo_service.listar()
+                ]
                 hoja.append(["ID", "Articulo", "Precio", "Costo", "Codigo","Stock", "Stock minimo", "Sucursal"])
             elif tipo=="ventas":
                 hoja.title = "Ventas"
-                cursor.execute("""
-                    SELECT strftime('%Y-%m', fecha) as mes, SUM(total) as total_ventas
-                    FROM ventas
-                    GROUP BY mes
-                """)
-                datos = cursor.fetchall()
+                datos = self.venta_service.ventas_agrupadas_por_mes_todas()
                 hoja.append(["Mes", "Total Ventas"])
 
             for fila in datos:
                 hoja.append(fila)
-            
+
             libro.save(archivo)
-            conn.close()
             ventana.destroy()
             messagebox.showinfo("Éxito", f"Datos exportados a {archivo} exitosamente.")
         except Exception as e:

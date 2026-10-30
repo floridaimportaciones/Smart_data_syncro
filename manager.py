@@ -15,7 +15,10 @@ class Manager(Tk):
         self.resizable(False,False)
 
         ruta= self.rutas(r"icono.ico")
-        self.iconbitmap(ruta)
+        try:
+            self.iconbitmap(ruta)
+        except Exception:
+            pass
 
 
         container = Frame(self)
@@ -37,10 +40,10 @@ class Manager(Tk):
         self.style.theme_use("clam") 
 
     def rutas(self,ruta ):
-        try: 
+        try:
             rutabase=sys._MEIPASS
         except Exception:
-            rutabase=os.path.abspath(".")
+            rutabase=os.path.dirname(os.path.abspath(__file__))
         return os.path.join(rutabase, ruta)
 
     def show_frame(self, container, permisos=None, username=None):

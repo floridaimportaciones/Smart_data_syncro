@@ -1,4 +1,3 @@
-import sqlite3
 from tkinter import *
 import tkinter as tk
 from Smart_data_syncro.container import Container
@@ -7,16 +6,17 @@ from PIL import Image, ImageTk
 import Smart_data_syncro.permisos as permisos
 import os
 import sys
-from Smart_data_syncro.utils import rutas
+from Smart_data_syncro.utils import rutas, imagen_segura
+from Smart_data_syncro.services.usuario_service import UsuarioService
 
 class Login(tk.Frame):
-    db_name ="database.db"
 
     def __init__(self, padre,controlador):
         super().__init__(padre)
         self.pack()
         self.place(x=0, y=0, width= 1100, height= 650)
         self.controlador = controlador
+        self.service = UsuarioService()
         self.widgets()
         self.permisos_usuario = {}
 
@@ -28,43 +28,36 @@ class Login(tk.Frame):
         pas = self.password.get()
 
         if self.validacion(user, pas):
-            # Solo consultar por usuario primero
-            consulta = "SELECT username, password, rol FROM usuarios WHERE username = ?"
-            parametros = (user,)
-
             try:
-                with sqlite3.connect(self.db_name) as conn:
-                    cursor = conn.cursor()
-                    cursor.execute(consulta, parametros)
-                    resultado = cursor.fetchone()
+                usuario = self.service.obtener_por_username(user)
 
-                    if resultado:
-                        stored_user, stored_pass, rol_usuario = resultado
-                        # Validate password (for now in plain text, should be hashed in production)
-                        if pas == stored_pass:
-                            # Normalize role names
-                            if rol_usuario.lower() in ["admin", "administrador"]:
-                                rol_usuario = "Administrador"
-                            elif rol_usuario.lower() in ["cajero", "caja"]:
-                                rol_usuario = "Cajero"
-                                
-                            # Get permissions for the role
-                            self.permisos_usuario = permisos.obtener_permisos_por_rol(rol_usuario)
-                            
-                            if not self.permisos_usuario:
-                                messagebox.showerror("Error", "El rol no tiene permisos definidos.")
-                                return
-                                
-                            self.control1()
-                            messagebox.showinfo("Bienvenido", f"¡Bienvenido {stored_user}! Has iniciado sesión correctamente.")
-                        else:
-                            messagebox.showerror("Error", "Usuario o contraseña incorrectos.")
-                            self.password.delete(0, "end")
+                if usuario:
+                    # Validate password (for now in plain text, should be hashed in production)
+                    if pas == usuario.password:
+                        # Normalize role names
+                        rol_usuario = usuario.rol
+                        if rol_usuario.lower() in ["admin", "administrador"]:
+                            rol_usuario = "Administrador"
+                        elif rol_usuario.lower() in ["cajero", "caja"]:
+                            rol_usuario = "Cajero"
+
+                        # Get permissions for the role
+                        self.permisos_usuario = permisos.obtener_permisos_por_rol(rol_usuario)
+
+                        if not self.permisos_usuario:
+                            messagebox.showerror("Error", "El rol no tiene permisos definidos.")
+                            return
+
+                        self.control1()
+                        messagebox.showinfo("Bienvenido", f"¡Bienvenido {usuario.username}! Has iniciado sesión correctamente.")
                     else:
-                        self.username.delete(0, "end")
+                        messagebox.showerror("Error", "Usuario o contraseña incorrectos.")
                         self.password.delete(0, "end")
-                        messagebox.showerror("Error", "Usuario no encontrado.")
-            except sqlite3.Error as e:
+                else:
+                    self.username.delete(0, "end")
+                    self.password.delete(0, "end")
+                    messagebox.showerror("Error", "Usuario no encontrado.")
+            except Exception as e:
                 messagebox.showerror("Error", f"Error de conexión a la base de datos: {e}")
         else:
             messagebox.showerror("Error", "Por favor, complete todos los campos.")
@@ -81,7 +74,7 @@ class Login(tk.Frame):
         fondo.pack()
         fondo.place(x=0, y=0, width= 1100, height= 650)
 
-        self.bg_image = Image.open(rutas("imagenes/fondo.png"))
+        self.bg_image = imagen_segura(rutas("imagenes/fondo.png"))
         self.bg_image = self.bg_image.resize((1100, 650))
         self.bg_image = ImageTk.PhotoImage(self.bg_image)
         self.bg_label = ttk.Label(fondo, image=self.bg_image)
@@ -90,7 +83,7 @@ class Login(tk.Frame):
         frame1 = tk.Frame(self, bg="white", highlightbackground="black", highlightthickness=1)
         frame1.place(x=350, y = 70, width= 400, height= 560)
 
-        self.logo_imagen = Image.open(rutas("imagenes/logo.png"))
+        self.logo_imagen = imagen_segura(rutas("imagenes/logo.png"))
         self.logo_imagen = self.logo_imagen.resize((200, 200))
         self.logo_imagen = ImageTk.PhotoImage(self.logo_imagen)
         self.logo_label = ttk.Label(frame1, image=self.logo_imagen, background="white")
@@ -118,28 +111,18 @@ class Login(tk.Frame):
 
 
 class Registro(tk.Frame):
-    db_name ="database.db"
-
 
     def __init__(self, padre, controlador):
         super().__init__(padre)
         self.pack()
         self.place(x=0, y=0, width= 1100, height= 650)
         self.controlador = controlador
+        self.service = UsuarioService()
         self.widgets()
 
     def validacion(self,user, pas ):
         return len(user) > 0 and len(pas) > 0
-    
-    def eje_consulta(self, consulta, parametros=()):
-        try:
-            with sqlite3.connect(self.db_name) as conn:
-                cursor = conn.cursor()
-                cursor.execute(consulta, parametros)
-                conn.commit()
-        except sqlite3.Error as e:
-            messagebox.showerror(title="Error", message="Error al ejecutar la consulta: {} ".format(e))
-    
+
     def registro(self):
         user = self.username.get()
         pas = self.password.get()
@@ -151,14 +134,15 @@ class Registro(tk.Frame):
                 self.password.delete(0, "end")
             else:
                 if key == "1234":
-                    consulta = "INSERT INTO usuarios VALUES (?, ?, ?, ?, ?)"
                     rol = self.combo_rol.get()
                     # Puedes agregar aquí un campo para sucursal, o dejarlo vacío por defecto
                     sucursal = ""  # O podrías mostrar un combobox para elegir sucursal
-                    parametros = (None, user, pas, rol, sucursal)
-                    self.eje_consulta(consulta, parametros)
-                    messagebox.showinfo(title="Registro exitoso", message="Usuario registrado correctamente.")
-                    self.control1()
+                    try:
+                        self.service.crear(user, pas, rol, sucursal)
+                        messagebox.showinfo(title="Registro exitoso", message="Usuario registrado correctamente.")
+                        self.control1()
+                    except Exception as e:
+                        messagebox.showerror(title="Error", message=f"Error al registrar el usuario: {e}")
                 else:
                     messagebox.showerror(title="Error", message="Código de registro incorrecto.")
         else:
@@ -176,7 +160,7 @@ class Registro(tk.Frame):
         fondo.pack()
         fondo.place(x=0, y=0, width= 1100, height= 650)
 
-        self.bg_image = Image.open(rutas("imagenes/fondo.png"))
+        self.bg_image = imagen_segura(rutas("imagenes/fondo.png"))
         self.bg_image = self.bg_image.resize((1100, 650))
         self.bg_image = ImageTk.PhotoImage(self.bg_image)
         self.bg_label = ttk.Label(fondo, image=self.bg_image)

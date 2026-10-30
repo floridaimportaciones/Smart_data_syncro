@@ -1,4 +1,3 @@
-import sqlite3
 import re
 from tkinter import *
 import tkinter as tk
@@ -7,16 +6,19 @@ import os
 import sys
 from PIL import Image, ImageTk
 import threading
-from Smart_data_syncro.utils import rutas
+from Smart_data_syncro.utils import rutas, imagen_segura
+from Smart_data_syncro.services.articulo_service import ArticuloService
+from Smart_data_syncro.services.sucursal_service import SucursalService
 from Smart_data_syncro.separados import Separados as SeparadosFrame
 
 
 class Inventario(tk.Frame):
-    db_name = 'database.db'
 
     def __init__(self, padre, username=None):
         super().__init__(padre)
         self.username = username
+        self.service = ArticuloService()
+        self.sucursal_service = SucursalService()
         self.widgets()
         self.cargar_sucursales()
         self.articulos_combobox()
@@ -94,16 +96,16 @@ class Inventario(tk.Frame):
         lblframe_botones.place(x=10, y=290, width=280, height=300)
 
         # Cargar imágenes para los botones
-        self.imagen_agregar = Image.open(rutas("imagenes/agregarUsuario.png")).resize((30, 30))
+        self.imagen_agregar = imagen_segura(rutas("imagenes/agregarUsuario.png")).resize((30, 30))
         self.tk_imagen_agregar = ImageTk.PhotoImage(self.imagen_agregar)
 
-        self.imagen_actualizar = Image.open(rutas("imagenes/actualizarUsuario.png")).resize((30, 30))
+        self.imagen_actualizar = imagen_segura(rutas("imagenes/actualizarUsuario.png")).resize((30, 30))
         self.tk_imagen_actualizar = ImageTk.PhotoImage(self.imagen_actualizar)
 
-        self.imagen_eliminar = Image.open(rutas("imagenes/eliminarUsuario.png")).resize((30, 30))
+        self.imagen_eliminar = imagen_segura(rutas("imagenes/eliminarUsuario.png")).resize((30, 30))
         self.tk_imagen_eliminar = ImageTk.PhotoImage(self.imagen_eliminar)
 
-        self.imagen_separados = Image.open(rutas("imagenes/separado.png")).resize((30, 30))
+        self.imagen_separados = imagen_segura(rutas("imagenes/separado.png")).resize((30, 30))
         self.tk_imagen_separados = ImageTk.PhotoImage(self.imagen_separados)
 
         # Botón Agregar
@@ -152,25 +154,21 @@ class Inventario(tk.Frame):
 
     def cargar_sucursales(self):
         try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            cursor.execute("SELECT nombre FROM sucursales")
-            self.sucursales = [sucursal[0] for sucursal in cursor.fetchall()]
-            conn.close()
-        except sqlite3.Error as e:
+            sucursales = self.sucursal_service.listar()
+            self.sucursales = [s.nombre for s in sucursales]
+            self._sucursal_id_por_nombre = {s.nombre: s.id for s in sucursales}
+        except Exception as e:
             print("Error al cargar sucursales:", e)
             self.sucursales = []
+            self._sucursal_id_por_nombre = {}
 
     def articulos_combobox(self):
-        self.con = sqlite3.connect('database.db')
-        self.cur = self.con.cursor()
-        # Traer TODAS las filas sin DISTINCT para mostrar todo sin excepción
-        self.cur.execute("SELECT articulo, codigo FROM articulos")
-        rows = self.cur.fetchall()
+        # Traer TODOS los articulos para mostrar todo sin excepción
+        rows = self.service.listar()
         # Guardar display como "Articulo [Codigo]" para desambiguar
         self.articulos_display = [
-            f"{r[0]} [{str(r[1]).strip()}]" if r[1] not in (None, "") else str(r[0])
-            for r in rows
+            f"{a.articulo} [{str(a.codigo).strip()}]" if a.codigo not in (None, "") else str(a.articulo)
+            for a in rows
         ]
         self.comboboxbuscar['values'] = self.articulos_display
 
@@ -186,6 +184,16 @@ class Inventario(tk.Frame):
         except Exception:
             return None
 
+    def _buscar_articulo_por_valor(self, valor):
+        """Busca un articulo por codigo (si viene entre corchetes o es el codigo tal cual)
+        o por nombre exacto, igual que hacia la query original con OR."""
+        codigo = self._extract_codigo(valor)
+        if codigo:
+            encontrado = self.service.obtener_por_codigo(codigo)
+            if encontrado:
+                return encontrado
+        return self.service.obtener_por_nombre(valor) or (self.service.obtener_por_codigo(valor) if valor else None)
+
     def agregar_articulos(self):
         top = tk.Toplevel(self)
         top.title("Agregar artículo")
@@ -199,11 +207,18 @@ class Inventario(tk.Frame):
         campos = [("Código", 20), ("Artículo", 60), ("Precio", 100), ("Costo", 140), ("Stock", 180), ("Stock mínimo", 220)]
         entradas = {}
 
+        import unicodedata
+        def _clave(texto):
+            # Quita tildes para que "Código"/"Stock mínimo" generen claves ASCII
+            # consistentes con las que usa guardar() ("codigo", "stock_minimo", etc.)
+            normalizado = unicodedata.normalize('NFD', texto)
+            return ''.join(c for c in normalizado if unicodedata.category(c) != 'Mn').lower().replace(' ', '_')
+
         for nombre, y in campos:
             tk.Label(top, text=f"{nombre}: ", font="Arial 12 bold", bg="#c9dbe1").place(x=20, y=y, height=25, width=110)
             entrada = ttk.Entry(top, font="Arial 12 bold")
             entrada.place(x=140, y=y, width=250, height=25)
-            entradas[nombre.lower().replace(' ', '_')] = entrada
+            entradas[_clave(nombre)] = entrada
         
         # Combobox para sucursal
         tk.Label(top, text="Sucursal: ", font="Arial 12 bold", bg="#c9dbe1").place(x=20, y=260, height=25, width=110)
@@ -233,23 +248,17 @@ class Inventario(tk.Frame):
                 messagebox.showerror("Error", "Precio, costo, stock y stock mínimo deben ser números.")
                 return
 
+            sucursal_id = self._sucursal_id_por_nombre.get(datos["sucursal"])
+
             try:
                 # Verificar si ya existe un artículo con ese código
-                self.cur.execute("SELECT id FROM articulos WHERE TRIM(codigo) = ? LIMIT 1", (datos["codigo"],))
-                row = self.cur.fetchone()
-                if row:
+                existente = self.service.obtener_por_codigo(datos["codigo"])
+                if existente:
                     # Preguntar si desea actualizar el existente
                     if messagebox.askyesno("Código existente",
                         f"Ya existe un artículo con el código '{datos['codigo']}'.\n\n¿Deseas ACTUALIZAR ese artículo con los nuevos datos?"):
-                        self.cur.execute(
-                            """
-                            UPDATE articulos
-                            SET articulo = ?, precio = ?, costo = ?, stock = ?, stock_minimo = ?, sucursal = ?
-                            WHERE id = ?
-                            """,
-                            (datos["articulo"], datos["precio"], datos["costo"], datos["stock"], datos["stock_minimo"], datos["sucursal"], row[0])
-                        )
-                        self.con.commit()
+                        self.service.actualizar(existente.id, datos["articulo"], datos["precio"], datos["costo"],
+                                                 datos["codigo"], datos["stock"], datos["stock_minimo"], sucursal_id)
                         messagebox.showinfo("Éxito", "Artículo actualizado correctamente por código.")
                         top.destroy()
                         self.cargar_articulos()
@@ -258,19 +267,14 @@ class Inventario(tk.Frame):
                     return
                 else:
                     # Insertar nuevo si el código no existe
-                    self.cur.execute("""
-                        INSERT INTO articulos (articulo, precio, costo, codigo, stock, stock_minimo, sucursal)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                        (datos["articulo"], datos["precio"], datos["costo"],
-                         datos["codigo"], datos["stock"], datos["stock_minimo"], datos["sucursal"])
-                    )
-                    self.con.commit()
+                    self.service.crear(datos["articulo"], datos["precio"], datos["costo"],
+                                        datos["codigo"], datos["stock"], datos["stock_minimo"], sucursal_id)
                     messagebox.showinfo("Éxito", "Artículo agregado correctamente.")
                     top.destroy()
                     self.cargar_articulos()
-            except sqlite3.Error as e:
+            except Exception as e:
                 print("Error al agregar artículo:", e)
-                messagebox.showerror("Error", "Error al agregar artículo.")
+                messagebox.showerror("Error", f"Error al agregar artículo: {e}")
 
         tk.Button(top, text="Guardar", font="Arial 12 bold", command=guardar).place(x=50, y=320, width=150, height=40)
         tk.Button(top, text="Cancelar", font="Arial 12 bold", command=top.destroy).place(x=300, y=320, width=150, height=40)
@@ -282,25 +286,18 @@ class Inventario(tk.Frame):
 
     def _cargar_articulos(self, filtro=None, categoria=None):
         self.tree.delete(*self.tree.get_children())
-        query = "SELECT articulo, precio, costo, codigo, stock, stock_minimo, sucursal FROM articulos"
-        params = []
+        articulos = self.service.listar(filtro)
 
-        if filtro:
-            query += " WHERE articulo LIKE ? OR codigo LIKE ?"
-            params.extend((f'%{filtro}%', f'%{filtro}%'))
-
-        self.cur.execute(query, params)
-        articulos = self.cur.fetchall()
-
-        for articulo, precio, costo, codigo, stock, stock_minimo, sucursal in articulos:
+        for a in articulos:
             # Resaltar en rojo si el stock está por debajo del mínimo
             tags = ()
             try:
-                if int(stock) < int(stock_minimo):
+                if int(a.stock) < int(a.stock_minimo):
                     tags = ("bajo_minimo",)
             except Exception:
                 pass
-            self.tree.insert("", "end", values=(articulo, f"${precio:.2f}", f"${costo:.2f}", codigo, stock, stock_minimo, sucursal), tags=tags)
+            sucursal_nombre = a.sucursal_obj.nombre if a.sucursal_obj else ""
+            self.tree.insert("", "end", values=(a.articulo, f"${a.precio:.2f}", f"${a.costo:.2f}", a.codigo, a.stock, a.stock_minimo, sucursal_nombre), tags=tags)
     # Configurar el estilo para resaltar (fondo y texto en rojo)
         self.tree.tag_configure("bajo_minimo", background="#ffcccc", foreground="red")
 
@@ -310,39 +307,23 @@ class Inventario(tk.Frame):
     def actualizar_label(self, event=None):
         valor = self.comboboxbuscar.get().strip()
         try:
-            codigo = self._extract_codigo(valor)
-            if codigo:
-                self.cur.execute(
-                    "SELECT articulo, precio, costo, stock, stock_minimo, sucursal FROM articulos WHERE codigo = ? LIMIT 1",
-                    (codigo,)
-                )
-            else:
-                self.cur.execute(
-                    """
-                    SELECT articulo, precio, costo, stock, stock_minimo, sucursal
-                    FROM articulos
-                    WHERE articulo = ? OR codigo = ?
-                    LIMIT 1
-                    """,
-                    (valor, valor)
-                )
-            resultado = self.cur.fetchone()
+            resultado = self._buscar_articulo_por_valor(valor)
 
             if resultado:
-                articulo, precio, costo, stock, stock_minimo, sucursal = resultado
-                self.label1.config(text=f"Articulo: {articulo}")
-                self.label2.config(text=f"Precio: {precio}")
-                self.label3.config(text=f"Costo: {costo}")
-                self.label4.config(text=f"Stock: {stock}")
-                self.label5.config(text=f"Sucursal: {sucursal}")
+                sucursal_nombre = resultado.sucursal_obj.nombre if resultado.sucursal_obj else ""
+                self.label1.config(text=f"Articulo: {resultado.articulo}")
+                self.label2.config(text=f"Precio: {resultado.precio}")
+                self.label3.config(text=f"Costo: {resultado.costo}")
+                self.label4.config(text=f"Stock: {resultado.stock}")
+                self.label5.config(text=f"Sucursal: {sucursal_nombre}")
                 # Mostrar stock mínimo
                 if hasattr(self, 'label_stock_minimo'):
-                    self.label_stock_minimo.config(text=f"Stock Mínimo: {stock_minimo}")
+                    self.label_stock_minimo.config(text=f"Stock Mínimo: {resultado.stock_minimo}")
                 else:
-                    self.label_stock_minimo = tk.Label(self.label4.master, text=f"Stock Mínimo: {stock_minimo}", font="Arial 14", bg="#c9dbe1")
+                    self.label_stock_minimo = tk.Label(self.label4.master, text=f"Stock Mínimo: {resultado.stock_minimo}", font="Arial 14", bg="#c9dbe1")
                     self.label_stock_minimo.place(x=5, y=160)
                 # Alerta si stock bajo
-                if int(stock) < int(stock_minimo):
+                if int(resultado.stock) < int(resultado.stock_minimo):
                     self.label4.config(fg="red")
                     self.label_stock_minimo.config(fg="red")
                 else:
@@ -353,7 +334,7 @@ class Inventario(tk.Frame):
                     label.config(text="No encontrado")
                 if hasattr(self, 'label_stock_minimo'):
                     self.label_stock_minimo.config(text="")
-        except sqlite3.Error as e:
+        except Exception as e:
             print("Error al buscar artículo:", e)
             messagebox.showerror("Error", "Error al buscar artículo")
 
@@ -373,21 +354,17 @@ class Inventario(tk.Frame):
             return
 
         try:
-            self.cur.execute(
-                "SELECT articulo, codigo FROM articulos WHERE articulo LIKE ? OR codigo LIKE ?",
-                (f'%{typed}%', f'%{typed}%')
-            )
-            resultados = self.cur.fetchall()
+            resultados = self.service.listar(typed)
             data = [
-                f"{r[0]} [{str(r[1]).strip()}]" if r[1] not in (None, "") else str(r[0])
-                for r in resultados
+                f"{a.articulo} [{str(a.codigo).strip()}]" if a.codigo not in (None, "") else str(a.articulo)
+                for a in resultados
             ]
             self.comboboxbuscar['values'] = data if data else ['No se encontraron resultados']
 
             self.comboboxbuscar.event_generate('<Down>')
             self.cargar_articulos(filtro=typed)
 
-        except sqlite3.Error as e:
+        except Exception as e:
             print("Error en filtro:", e)
             messagebox.showerror("Error", "No se pudo filtrar los artículos")
             
@@ -395,26 +372,14 @@ class Inventario(tk.Frame):
         selected_item = self.comboboxbuscar.get()
         if not selected_item:
             messagebox.showerror("Error", "Seleccione un artículo")
-            return 
+            return
 
-        # Resolver por código si viene entre corchetes
-        codigo_sel = self._extract_codigo(selected_item)
-        if codigo_sel:
-            self.cur.execute(
-                "SELECT articulo,precio,costo,codigo,stock,stock_minimo,sucursal FROM articulos WHERE codigo = ? LIMIT 1",
-                (codigo_sel,)
-            )
-        else:
-            self.cur.execute(
-                "SELECT articulo,precio,costo,codigo,stock,stock_minimo,sucursal FROM articulos WHERE articulo = ? LIMIT 1",
-                (selected_item,)
-            )
-        resultado = self.cur.fetchone()
-        
+        resultado = self._buscar_articulo_por_valor(selected_item)
+
         if not resultado:
             messagebox.showerror("Error", "No se encontró el artículo")
             return
-        
+
         top = tk.Toplevel(self)
         top.title("Editar Articulo")
         top.geometry("700x450+200+50")
@@ -424,9 +389,13 @@ class Inventario(tk.Frame):
         top.grab_set()
         top.focus_set()
         top.lift()
-        
-        (articulo, precio, costo, codigo , stock, stock_minimo, sucursal) = resultado
-        codigo_actual = codigo  # Mantener el código actual para identificar el registro al guardar
+
+        id_articulo = resultado.id
+        articulo, precio, costo, codigo, stock, stock_minimo = (
+            resultado.articulo, resultado.precio, resultado.costo,
+            resultado.codigo, resultado.stock, resultado.stock_minimo,
+        )
+        sucursal = resultado.sucursal_obj.nombre if resultado.sucursal_obj else ""
         
         tk.Label(top,text="Articulo: ",font="arial 12 bold ",bg="#c9dbe1").place(x=20,y= 20, width=80,height=25)
         entry_articulo = ttk.Entry(top,font="arial 12 bold")
@@ -488,23 +457,19 @@ class Inventario(tk.Frame):
             except ValueError:
                 messagebox.showerror("Error", "Los campos precio, costo, stock y stock mínimo deben ser numericos")
                 return
-            # Evitar duplicar código si intenta cambiarlo a uno existente
-            codigo_nuevo = (codigo_nuevo or "").strip()
-            if not codigo_nuevo:
-                messagebox.showerror("Error", "El Código no puede estar vacío.")
+
+            sucursal_id = self._sucursal_id_por_nombre.get(sucursal)
+
+            try:
+                # Actualizar por ID (el service ya valida que el código nuevo no choque con otro artículo)
+                self.service.actualizar(id_articulo, nuevo_articulo, precio, costo, codigo_nuevo, stock, stock_minimo, sucursal_id)
+            except ValueError as e:
+                messagebox.showerror("Error", str(e))
                 return
-            if codigo_nuevo != (codigo_actual or ""):
-                self.cur.execute("SELECT id FROM articulos WHERE TRIM(codigo) = ? LIMIT 1", (codigo_nuevo,))
-                row_dup = self.cur.fetchone()
-                if row_dup:
-                    messagebox.showerror("Código duplicado", f"Ya existe un artículo con el código '{codigo_nuevo}'. Elige otro código.")
-                    return
-            
-            # Actualizar exclusivamente por el CÓDIGO actual para evitar ambigüedades
-            self.cur.execute(
-            "UPDATE articulos SET articulo = ?, precio = ?, costo = ?, codigo = ?, stock = ?, stock_minimo = ?, sucursal = ? WHERE codigo = ?",
-            (nuevo_articulo, precio, costo, codigo_nuevo, stock, stock_minimo, sucursal, codigo_actual))
-            self.con.commit()
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo editar el artículo: {e}")
+                return
+
             self.articulos_combobox()
             self.after(0,lambda: self.cargar_articulos(filtro=nuevo_articulo))
             top.destroy()
@@ -521,18 +486,13 @@ class Inventario(tk.Frame):
 
         try:
             # Buscar el artículo por código si está disponible
-            codigo_val = self._extract_codigo(valor)
-            if codigo_val:
-                self.cur.execute("SELECT articulo, codigo FROM articulos WHERE codigo = ? LIMIT 1", (codigo_val,))
-            else:
-                self.cur.execute("SELECT articulo, codigo FROM articulos WHERE articulo = ? OR codigo = ? LIMIT 1", (valor, valor))
-            resultado = self.cur.fetchone()
+            resultado = self._buscar_articulo_por_valor(valor)
 
             if not resultado:
                 messagebox.showerror("Error", "No se encontró ningún artículo con ese nombre o código.")
                 return
 
-            articulo, codigo = resultado
+            articulo = resultado.articulo
 
         # Confirmación del usuario
             respuesta = messagebox.askyesno("Confirmar", f"¿Estás seguro de eliminar el artículo '{articulo}'?")
@@ -540,8 +500,7 @@ class Inventario(tk.Frame):
                 return
 
         # Eliminar de la base de datos
-            self.cur.execute("DELETE FROM articulos WHERE articulo = ? AND codigo = ?", (articulo, codigo))
-            self.con.commit()
+            self.service.eliminar(resultado.id)
 
         # Mostrar éxito
             messagebox.showinfo("Éxito", "Artículo eliminado correctamente")
@@ -738,18 +697,24 @@ class Inventario(tk.Frame):
                     stock_min_i = stock_min if stock_min is not None else 0
                     articulo_i = articulo if articulo else (codigo or "SIN NOMBRE")
                     codigo_i = (str(codigo).strip() if codigo is not None else "")
-                    sucursal_i = sucursal if sucursal else (self.sucursales[0] if getattr(self, 'sucursales', None) else "")
+                    sucursal_nombre_i = sucursal if sucursal else (self.sucursales[0] if getattr(self, 'sucursales', None) else "")
+                    sucursal_id_i = self._sucursal_id_por_nombre.get(sucursal_nombre_i)
 
-                    # Insertar siempre (incluso si existe el código)
+                    if not codigo_i:
+                        # Sin código no hay forma de identificar el artículo para evitar duplicados
+                        omitidos += 1
+                        continue
+
+                    # Si el código ya existe, actualizar ese artículo en vez de duplicarlo
                     try:
-                        self.cur.execute(
-                            """
-                            INSERT INTO articulos (articulo, precio, costo, codigo, stock, stock_minimo, sucursal)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (articulo_i, precio_i, costo_i, codigo_i, stock_i, stock_min_i, sucursal_i)
-                        )
-                        insertados += 1
+                        existente = self.service.obtener_por_codigo(codigo_i)
+                        if existente:
+                            self.service.actualizar(existente.id, articulo_i, precio_i, costo_i, codigo_i,
+                                                     stock_i, stock_min_i, sucursal_id_i)
+                            actualizados += 1
+                        else:
+                            self.service.crear(articulo_i, precio_i, costo_i, codigo_i, stock_i, stock_min_i, sucursal_id_i)
+                            insertados += 1
                     except Exception as exi:
                         print("Error insertando fila:", exi)
                         errores += 1
@@ -757,7 +722,6 @@ class Inventario(tk.Frame):
                     print("Error procesando fila:", e)
                     errores += 1
 
-            self.con.commit()
             self.articulos_combobox()
             self.cargar_articulos()
 

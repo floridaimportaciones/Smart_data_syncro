@@ -1,4 +1,3 @@
-import sqlite3
 from tkinter import *
 from tkcalendar import Calendar
 import tkinter as tk
@@ -13,54 +12,31 @@ from reportlab.pdfgen import canvas
 import sys
 import os
 from PIL import Image, ImageTk
-from utils import rutas
-from facturatech_api import FacturaTechClient
-from generar_xml import generar_xml_factura_dian, generar_xml_ubl21
-import base64
+from Smart_data_syncro.utils import rutas
+from Smart_data_syncro.services.articulo_service import ArticuloService
+from Smart_data_syncro.services.cliente_service import ClienteService
+from Smart_data_syncro.services.usuario_service import UsuarioService
+from Smart_data_syncro.services.venta_service import VentaService
+from Smart_data_syncro.services.empresa_service import EmpresaService
 
 class Ventas(tk.Frame):
-    def crear_tabla_abonos(self):
-        """Asegura la existencia de la tabla abonos_separados para registrar desgloses de pago."""
-        try:
-            with sqlite3.connect(self.db_name) as conn:
-                c = conn.cursor()
-                c.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS abonos_separados (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        factura INTEGER,
-                        fecha TEXT,
-                        monto REAL,
-                        metodo_pago TEXT,
-                        banco TEXT,
-                        sucursal TEXT
-                    )
-                    """
-                )
-                conn.commit()
-        except Exception as e:
-            print(f"[WARN] No se pudo asegurar tabla abonos_separados: {e}")
-    def consultar_estado_documento(self, transaccion_id):
-        """Consulta el estado del documento electrónico en FacturaTech usando el transaccion_id."""
-        try:
-            ft_client = FacturaTechClient()
-            estado = ft_client.get_status(transaccion_id)
-            return estado
-        except Exception as e:
-            return f"Error al consultar estado del documento: {e}"
     import os
-    db_name = os.path.abspath('database.db')
 
     def __init__(self, padre, username=None):
         super().__init__(padre)
+        self.articulo_service = ArticuloService()
+        self.cliente_service = ClienteService()
+        self.usuario_service = UsuarioService()
+        self.venta_service = VentaService(articulo_service=self.articulo_service)
+        self.empresa_service = EmpresaService()
         self.username = username
         self.sucursal = None
         if self.username:
             self.sucursal = self.obtener_sucursal_usuario()
         self.numero_factura = self.obtener_numero_factura_actual()
         self.productos_seleccionados = []
-        self.folio_inicial = 1  # Puedes ajustar esto según tu rango real
-        self.folio_final = 99999  # Puedes ajustar esto según tu rango real
+        self.folio_inicial = 1  
+        self.folio_final = 99999  
         self.widgets()
         self.cargar_productos()
         self.cargar_clientes()
@@ -70,8 +46,6 @@ class Ventas(tk.Frame):
         self.barcode_timer_producto = None
         self.bind("<<ClienteActualizado>>", lambda e: self.cargar_clientes())
         self.actualizar_folios_disponibles()
-        # Asegurar tabla de abonos para soportar pago parcial en ventas
-        self.crear_tabla_abonos()
 
     def actualizar_folios_disponibles(self):
         folio_actual = self.numero_factura
@@ -86,37 +60,16 @@ class Ventas(tk.Frame):
 
     def obtener_numero_factura_actual(self):
         try:
-            conn = sqlite3.connect(self.db_name)
-            c = conn.cursor()
-            c.execute("SELECT factura FROM ventas")
-            facturas = c.fetchall()
-            conn.close()
-
-            numeros_factura = []
-            for f in facturas:
-                try:
-                    numeros_factura.append(int(f[0]))
-                except (ValueError, TypeError):
-                    continue
-
-            if not numeros_factura:
-                return 1
-            return max(numeros_factura) + 1
-
-        except sqlite3.Error as e:
+            return self.venta_service.siguiente_numero_factura()
+        except Exception as e:
             print("Error al obtener el número de factura actual: ", e)
             return 1
         
     def cargar_clientes(self):
         try:
-            conn = sqlite3.connect(self.db_name)
-            c = conn.cursor()
-            c.execute("SELECT nombre FROM clientes")
-            clientes = c.fetchall()
-            self.clientes = [cliente[0] for cliente in clientes] # self.clientes ahora es una lista de strings
+            self.clientes = [cliente.nombre for cliente in self.cliente_service.listar()]
             self.entry_cliente["values"] = self.clientes
-            conn.close()
-        except sqlite3.Error as e:
+        except Exception as e:
             print("Error al cargar los clientes en Ventas: ", e)
 
     def filtrar_clientes(self, event): 
@@ -141,20 +94,14 @@ class Ventas(tk.Frame):
 
     def cargar_productos(self):
         try:
-            conn = sqlite3.connect(self.db_name)
-            c = conn.cursor()
             # Mostrar TODOS los productos sin excepción
-            c.execute("SELECT id, articulo, codigo FROM articulos")
-            resultados = c.fetchall()
-            conn.close()
-            # Guardar también el id del producto para operaciones seguras
-            self.products = [{"id": r[0], "nombre": r[1], "codigo": r[2]} for r in resultados]
+            self.products = [{"id": a.id, "nombre": a.articulo, "codigo": a.codigo} for a in self.articulo_service.listar()]
             # Mostrar en el combo "Nombre [Código]" si hay código, para forzar selección por código
             def _display(p):
                 code = str(p.get("codigo") or '').strip()
                 return f"{p['nombre']} [{code}]" if code else p['nombre']
             self.entry_producto["values"] = [_display(p) for p in self.products]
-        except sqlite3.Error as e:
+        except Exception as e:
             print("Error al cargar los productos: ", e)
 
     def filtrar_productos(self, event): 
@@ -340,32 +287,22 @@ class Ventas(tk.Frame):
             messagebox.showerror("Error", "Por favor, seleccione un cliente antes de escanear.")
             return
         try:
-            conn = sqlite3.connect(self.db_name)
-            c = conn.cursor()
-            c.execute("SELECT id, articulo, precio, costo, stock FROM articulos WHERE codigo = ? ORDER BY id ASC LIMIT 1", (codigo,))
-            row = c.fetchone()
-            if not row:
+            art = self.articulo_service.obtener_por_codigo(codigo)
+            if not art:
                 messagebox.showerror("Error", "No se encontró un artículo con ese código.")
-                conn.close()
                 return
-            art_id, art_nombre, precio, costo, _ = row
-            # Stock total por código
-            c.execute("SELECT COALESCE(SUM(stock),0) FROM articulos WHERE codigo = ?", (codigo,))
-            total_stock = c.fetchone()[0] or 0
-            if cantidad > total_stock:
-                messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {int(total_stock)} unidades disponibles para el código {codigo}.")
-                conn.close()
+            if cantidad > art.stock:
+                messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {int(art.stock)} unidades disponibles para el código {codigo}.")
                 return
-            total = cantidad * float(precio)
+            total = cantidad * float(art.precio)
             total_cop = "{:,.0f}".format(total)
             # Insertar al Treeview
-            self.tre.insert("", "end", values=(self.numero_factura, cliente, art_nombre, "{:,.0f}".format(precio), cantidad, total_cop))
+            self.tre.insert("", "end", values=(self.numero_factura, cliente, art.articulo, "{:,.0f}".format(art.precio), cantidad, total_cop))
             # Registrar internamente, preservando el código
-            self.productos_seleccionados.append((self.numero_factura, cliente, art_nombre, float(precio), cantidad, total_cop, float(costo), codigo))
+            self.productos_seleccionados.append((self.numero_factura, cliente, art.articulo, float(art.precio), cantidad, total_cop, float(art.costo), codigo))
             # Recalcular total
             self.calcular_precio_total()
-            conn.close()
-        except sqlite3.Error as e:
+        except Exception as e:
             print("Error al agregar por código: ", e)
 
     def show_all_products(self, event=None):
@@ -405,69 +342,43 @@ class Ventas(tk.Frame):
         cliente= self.entry_cliente.get()
         
         try:
-            conn = sqlite3.connect(self.db_name)
-            c= conn.cursor()
             # Intentar extraer código desde el valor (Nombre [COD] o COD)
             codigo = self._extract_codigo(producto_val)
             used_exact_code = bool(codigo)
 
-            art_id = None
-            art_nombre = None
-            precio = None
-            costo = None
-            total_stock = 0
+            art = None
 
             if codigo:
                 # Buscar por código
-                c.execute("SELECT id, articulo, precio, costo, stock FROM articulos WHERE codigo = ? ORDER BY id ASC LIMIT 1", (codigo,))
-                row = c.fetchone()
-                if not row:
+                art = self.articulo_service.obtener_por_codigo(codigo)
+                if not art:
                     messagebox.showerror("Error", "No se encontró un artículo con ese código.")
-                    conn.close()
                     return
-                art_id, art_nombre, precio, costo, _ = row
-                # Stock total sumado por código
-                c.execute("SELECT COALESCE(SUM(stock),0) FROM articulos WHERE codigo = ?", (codigo,))
-                total_stock = c.fetchone()[0] or 0
-                if cantidad > total_stock:
-                    messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {int(total_stock)} unidades disponibles para el código {codigo}.")
-                    conn.close()
+                if cantidad > art.stock:
+                    messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {int(art.stock)} unidades disponibles para el código {codigo}.")
                     return
             else:
                 # No se proporcionó código: intentar buscar por nombre exacto
-                c.execute("SELECT id, articulo, precio, costo, stock, codigo FROM articulos WHERE articulo = ? ORDER BY id ASC LIMIT 1", (producto_val,))
-                row = c.fetchone()
-                if row:
-                    art_id, art_nombre, precio, costo, stock_row, codigo_db = row
-                    codigo = str(codigo_db).strip() if codigo_db is not None else None
-                    total_stock = stock_row or 0
-                    # Si hay más stock requerido que disponible
-                    if cantidad > total_stock:
-                        messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {int(total_stock)} unidades disponibles para el producto {art_nombre}.")
-                        conn.close()
+                art = self.articulo_service.obtener_por_nombre(producto_val)
+                if art:
+                    if cantidad > art.stock:
+                        messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {int(art.stock)} unidades disponibles para el producto {art.articulo}.")
                         return
                 else:
                     # Intentar búsqueda parcial (no obligatoria seleccionar de la lista)
-                    try:
-                        pattern = f"%{producto_val}%"
-                        c.execute("SELECT id, articulo, precio, costo, stock, codigo FROM articulos WHERE articulo LIKE ? COLLATE NOCASE ORDER BY id ASC LIMIT 1", (pattern,))
-                        rowp = c.fetchone()
-                    except Exception:
-                        rowp = None
-                    if rowp:
-                        art_id, art_nombre, precio, costo, stock_row, codigo_db = rowp
-                        codigo = str(codigo_db).strip() if codigo_db is not None else None
-                        total_stock = stock_row or 0
-                        if cantidad > total_stock:
-                            messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {int(total_stock)} unidades disponibles para el producto {art_nombre}.")
-                            conn.close()
+                    coincidencias = self.articulo_service.listar(producto_val)
+                    art = coincidencias[0] if coincidencias else None
+                    if art:
+                        if cantidad > art.stock:
+                            messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {int(art.stock)} unidades disponibles para el producto {art.articulo}.")
                             return
                     else:
                         # No se encontró por nombre ni por parcial; informar al usuario
                         messagebox.showerror("Error", "No se encontró el producto. Escriba el nombre exactamente o use el código del producto.")
-                        conn.close()
                         return
 
+            art_nombre, precio, costo = art.articulo, art.precio, art.costo
+            codigo = str(art.codigo).strip() if art.codigo is not None else None
             total = cantidad * precio
             total_cop = "{:,.0f}".format(total)
 
@@ -478,7 +389,6 @@ class Ventas(tk.Frame):
 
             self.calcular_precio_total()
 
-            conn.close()
             # Solo limpiar el campo producto si el usuario ingresó un código explícito (escaneo o escritura del código)
             if used_exact_code:
                 try:
@@ -490,8 +400,8 @@ class Ventas(tk.Frame):
                 self.entry_cantidad.delete(0,'end')
             except Exception:
                 pass
-        
-        except sqlite3.Error as e:
+
+        except Exception as e:
             print("Error al agregar articulo: ", e)
             
     def calcular_precio_total(self):
@@ -510,16 +420,10 @@ class Ventas(tk.Frame):
         producto_seleccionado = self.entry_producto.get()
 
         try:
-            conn = sqlite3.connect(self.db_name)
-            c = conn.cursor()
             codigo = self._extract_codigo(producto_seleccionado)
-            resultado = None
-            if codigo:
-                c.execute("SELECT COALESCE(SUM(stock),0) FROM articulos WHERE codigo = ?", (codigo,))
-                resultado = c.fetchone()
-            conn.close()
-            if resultado:
-                self.label_stock.config(text=f"Stock: {int(resultado[0])}")
+            art = self.articulo_service.obtener_por_codigo(codigo) if codigo else None
+            if art:
+                self.label_stock.config(text=f"Stock: {int(art.stock)}")
                 # Cerrar dropdown del combobox de producto si está abierto y pasar foco a cantidad
                 try:
                     try:
@@ -531,7 +435,7 @@ class Ventas(tk.Frame):
                     pass
             else:
                 self.label_stock.config(text="Stock: No encontrado.")
-        except sqlite3.Error as e:
+        except Exception as e:
             print("Error al obtener el stock del producto", e)
     
     def realizar_pago(self):
@@ -729,75 +633,25 @@ class Ventas(tk.Frame):
 
         # Registrar venta y actualizar stock
         try:
-            conn = sqlite3.connect(self.db_name)
-            c = conn.cursor()
             fecha_actual = datetime.datetime.now().strftime("%Y-%m-%d")
             hora_actual = datetime.datetime.now().strftime("%H:%M:%S")
             sucursal_venta = None
-            username_query = self.username.strip().lower() if self.username else None
-            if username_query:
-                c.execute("SELECT username, sucursal, rol FROM usuarios",())
-                usuarios = c.fetchall()
-                for user_db, sucursal_db, rol_db in usuarios:
-                    if user_db.strip().lower() == username_query:
-                        sucursal_venta = sucursal_db
-                        rol = rol_db
-                        break
-                if 'rol' in locals() and rol.lower() in ["admin", "administrador"]:
-                    sucursal_venta = "ADMIN"
+            if self.username:
+                usuario = self.usuario_service.obtener_por_username(self.username.strip())
+                if usuario:
+                    if usuario.rol.lower() in ["admin", "administrador"]:
+                        sucursal_venta = "ADMIN"
+                    else:
+                        sucursal_venta = usuario.sucursal
             if not sucursal_venta or sucursal_venta == "None":
                 messagebox.showerror("Error", f"El usuario '{self.username}' no tiene una sucursal asignada. Contacte al administrador.")
                 return
-            for item in self.productos_seleccionados:
-                # Soportar tuplas antiguas (7) y nuevas (8 con codigo)
-                if len(item) == 7:
-                    factura, cliente, producto, precio, cantidad, total, costo = item
-                    producto_codigo = None
-                elif len(item) >= 8:
-                    factura, cliente, producto, precio, cantidad, total, costo, producto_codigo = item[:8]
-                else:
-                    print(f"[ERROR] Item mal formado en productos_seleccionados: {item}")
-                    continue
-                c.execute("INSERT INTO ventas (factura,cliente,articulo,precio,cantidad,total,costo,fecha,hora,metodo_pago,sucursal,descuento,banco) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", 
-                    (factura,cliente,producto,precio,cantidad,total.replace(" ","").replace(",",""),costo*int(cantidad),fecha_actual,hora_actual,metodo_pago,sucursal_venta, descuento if item==self.productos_seleccionados[0] else 0, banco))
-                # Descontar stock distribuido entre filas con el mismo código (para evitar descontar en todas a la vez)
-                if producto_codigo:
-                    restante = int(cantidad)
-                    # Obtener filas con su stock actual, ordenadas por id
-                    c.execute("SELECT id, stock FROM articulos WHERE codigo = ? AND stock > 0 ORDER BY id ASC", (producto_codigo,))
-                    filas = c.fetchall()
-                    for art_id, stk in filas:
-                        if restante <= 0:
-                            break
-                        descontar = min(restante, int(stk))
-                        if descontar > 0:
-                            c.execute("UPDATE articulos SET stock = stock - ? WHERE id = ?", (descontar, art_id))
-                            restante -= descontar
-                    if restante > 0:
-                        # Inconsistencia: no había stock suficiente aunque se validó antes
-                        print(f"[WARN] Stock insuficiente al descontar por código {producto_codigo}. Restante no descontado: {restante}")
-                else:
-                    # Compatibilidad: intentar deducir el código y aplicar distribución
-                    try:
-                        c.execute("SELECT codigo FROM articulos WHERE articulo = ? LIMIT 1", (producto,))
-                        rowc = c.fetchone()
-                        if rowc and rowc[0]:
-                            cod = rowc[0]
-                            restante = int(cantidad)
-                            c.execute("SELECT id, stock FROM articulos WHERE codigo = ? AND stock > 0 ORDER BY id ASC", (cod,))
-                            for art_id, stk in c.fetchall():
-                                if restante <= 0:
-                                    break
-                                descontar = min(restante, int(stk))
-                                if descontar > 0:
-                                    c.execute("UPDATE articulos SET stock = stock - ? WHERE id = ?", (descontar, art_id))
-                                    restante -= descontar
-                            if restante > 0:
-                                print(f"[WARN] Stock insuficiente al descontar por código {cod}. Restante no descontado: {restante}")
-                        else:
-                            print(f"[WARN] No se pudo determinar el código para '{producto}', no se actualiza stock.")
-                    except Exception as exu:
-                        print(f"[WARN] Falla al actualizar stock por distribución: {exu}")
+
+            self.venta_service.registrar_venta(
+                self.productos_seleccionados, fecha_actual, hora_actual,
+                metodo_pago, sucursal_venta, banco, descuento,
+            )
+
             # Si el método fue pago parcial, registrar desglose en abonos_separados para esta factura
             if metodo_pago == "pago parcial":
                 try:
@@ -810,18 +664,10 @@ class Ventas(tk.Frame):
                 requerido_ef = max(total_venta - tr, 0)
                 ef_aplicado = max(min(ef, requerido_ef), 0)
                 if ef_aplicado and ef_aplicado > 0:
-                    c.execute(
-                        "INSERT INTO abonos_separados (factura, fecha, monto, metodo_pago, banco, sucursal) VALUES (?, ?, ?, ?, ?, ?)",
-                        (self.numero_factura, fecha_actual, ef_aplicado, 'efectivo', None, sucursal_venta)
-                    )
+                    self.venta_service.registrar_abono(self.numero_factura, fecha_actual, ef_aplicado, 'efectivo', None, sucursal_venta)
                 if tr and tr > 0:
-                    c.execute(
-                        "INSERT INTO abonos_separados (factura, fecha, monto, metodo_pago, banco, sucursal) VALUES (?, ?, ?, ?, ?, ?)",
-                        (self.numero_factura, fecha_actual, tr, 'transferencia', banco, sucursal_venta)
-                    )
-            conn.commit()
-            conn.close()
-        except sqlite3.Error as e:
+                    self.venta_service.registrar_abono(self.numero_factura, fecha_actual, tr, 'transferencia', banco, sucursal_venta)
+        except Exception as e:
             messagebox.showerror("Error", f"Error al registrar la venta: {e}")
             return
 
@@ -844,158 +690,6 @@ class Ventas(tk.Frame):
             self.generar_factura_pdf(total_venta, cliente, descuento=descuento, banco=banco, efectivo_pagado=ef_aplicado if ef_aplicado and ef_aplicado > 0 else None, transferencia_pagada=tr if tr and tr > 0 else None)
         else:
             self.generar_factura_pdf(total_venta, cliente, descuento=descuento, banco=banco)
-
-        # Facturación electrónica
-        respuesta_tipo = messagebox.askquestion(
-            "Tipo de Factura",
-            "¿Desea generar factura electrónica (DIAN/FacturaTech)?\n\nSí = Electrónica (PDF + XML + envío a FacturaTech)\nNo = Solo PDF normal",
-            icon='question'
-        )
-        if respuesta_tipo == 'yes':
-            venta_data = {"total": total_venta, "descuento": descuento}
-            cliente_data = {"nombre": cliente, "nit": "", "direccion": "", "telefono": "", "email": ""}
-            # Buscar toda la información del cliente
-            try:
-                conn = sqlite3.connect(self.db_name)
-                c = conn.cursor()
-                c.execute("SELECT cedula, celular, direccion, correo FROM clientes WHERE nombre = ?", (cliente,))
-                row = c.fetchone()
-                if row:
-                    cliente_data["nit"] = row[0] if row[0] else ""
-                    cliente_data["telefono"] = row[1] if row[1] else ""
-                    cliente_data["direccion"] = row[2] if row[2] else "calle 123"
-                    cliente_data["email"] = row[3] if row[3] else "cliente@correo.com"
-                else:
-                    # Cliente no encontrado en base de datos, usar valores por defecto
-                    cliente_data["direccion"] = "calle 123"
-                    cliente_data["email"] = "cliente@correo.com"
-                conn.close()
-            except Exception as e:
-                print(f"[WARN] No se pudo obtener información del cliente: {e}")
-                # Valores por defecto en caso de error
-                cliente_data["direccion"] = "calle 123"
-                cliente_data["email"] = "cliente@correo.com"
-            productos = []
-            for item in self.productos_seleccionados:
-                # Estructura esperada: (factura, cliente, producto, precio, cantidad, total_cop, costo[, codigo])
-                try:
-                    producto = item[2]
-                    precio = item[3]
-                    cantidad = item[4]
-                except Exception:
-                    continue
-                productos.append({"nombre": producto, "precio": precio, "cantidad": cantidad})
-            empresa_data = {"nombre": "", "nit": "", "direccion": "", "telefono": "", "email": ""}
-            try:
-                conn = sqlite3.connect(self.db_name)
-                c = conn.cursor()
-                c.execute("SELECT nombre, nit, direccion, telefono, email FROM empresa WHERE id = 1")
-                row = c.fetchone()
-                if row:
-                    empresa_data["nombre"] = row[0] if row[0] else ""
-                    empresa_data["nit"] = row[1] if row[1] else ""
-                    empresa_data["direccion"] = row[2] if row[2] else ""
-                    empresa_data["telefono"] = row[3] if row[3] else ""
-                    empresa_data["email"] = row[4] if row[4] else ""
-                conn.close()
-            except Exception as e:
-                print(f"[WARN] No se pudo obtener datos de empresa: {e}")
-            xml_str = generar_xml_factura_dian(
-                venta_data, cliente_data, productos, empresa_data,
-                self.numero_factura, fecha_actual, hora_actual
-            )
-            try:
-                xml_base64 = base64.b64encode(xml_str.encode("utf-8")).decode("utf-8")
-                ft_client = FacturaTechClient()
-                response = ft_client.upload_invoice(xml_base64)
-                log_dir = os.path.abspath('logs_factura_electronica')
-                if not os.path.exists(log_dir):
-                    os.makedirs(log_dir)
-                now = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-                log_file = os.path.join(log_dir, f"factura_{self.numero_factura}_{now}.log")
-                with open(log_file, 'w', encoding='utf-8') as f:
-                    f.write('--- XML ENVIADO ---\n')
-                    f.write(xml_str)
-                    f.write('\n--- RESPUESTA FACTURATECH ---\n')
-                    f.write(str(response))
-                    f.write(f"\n--- DEBUG tipo(response): {type(response)} ---\n")
-                    f.write(f"--- DEBUG repr(response): {repr(response)} ---\n")
-                # Extraer transaccionID y verificar código de respuesta
-                import ast, re
-                transaccion_id = None
-                resp_obj = response
-                response_code = None
-                
-                # Extraer código de respuesta
-                if isinstance(response, dict):
-                    response_code = response.get('code')
-                    resp_obj = response
-                elif hasattr(response, 'code'):  # Para objetos zeep
-                    response_code = getattr(response, 'code', None)
-                    resp_obj = response
-                elif hasattr(response, 'get'):
-                    response_code = response.get('code')
-                    resp_obj = response
-                elif isinstance(response, str):
-                    try:
-                        resp_obj = ast.literal_eval(response)
-                        if isinstance(resp_obj, dict):
-                            response_code = resp_obj.get('code')
-                    except Exception:
-                        # Buscar código en string con regex
-                        match = re.search(r"['\"]code['\"]\s*:\s*['\"]?(\d+)['\"]?", response)
-                        if match:
-                            response_code = match.group(1)
-                else:
-                    # Para cualquier otro tipo de objeto, intentar acceder al atributo code
-                    try:
-                        response_code = getattr(response, 'code', None)
-                    except:
-                        response_code = None
-                
-                # Extraer transaccionID
-                if hasattr(response, 'transaccionID'):
-                    transaccion_id = getattr(response, 'transaccionID', None)
-                elif isinstance(resp_obj, dict) and 'transaccionID' in resp_obj:
-                    transaccion_id = resp_obj['transaccionID']
-                elif hasattr(resp_obj, 'get'):
-                    transaccion_id = resp_obj.get('transaccionID')
-                # Si sigue sin encontrarse, buscar con regex en el string (más robusto)
-                if not transaccion_id and isinstance(response, str):
-                    response_clean = response.replace('\n', ' ').replace('\r', ' ')
-                    match = re.search(r"['\"]transaccionID['\"]\s*:\s*['\"]([^'\"]+)['\"]", response_clean)
-                    if match:
-                        transaccion_id = match.group(1)
-                
-                # Verificar si el código es 201 (éxito)
-                if response_code == '201':
-                    if transaccion_id:
-                        estado = self.consultar_estado_documento(transaccion_id)
-                        with open(log_file, 'a', encoding='utf-8') as f:
-                            f.write(f"\n--- ESTADO DOCUMENTO ---\n{estado}\n")
-                        messagebox.showinfo("Factura Electrónica",
-                            "Su factura electrónica fue enviada y firmada correctamente")
-                    else:
-                        with open(log_file, 'a', encoding='utf-8') as f:
-                            f.write("\n--- ERROR: No se encontró transaccionID en la respuesta de FacturaTech ---\n")
-                        messagebox.showinfo("Factura Electrónica",
-                            "Su factura electrónica fue enviada y firmada correctamente")
-                else:
-                    # Para otros códigos o errores, mostrar mensaje detallado
-                    if transaccion_id:
-                        estado = self.consultar_estado_documento(transaccion_id)
-                        with open(log_file, 'a', encoding='utf-8') as f:
-                            f.write(f"\n--- ESTADO DOCUMENTO ---\n{estado}\n")
-                        messagebox.showinfo("Factura Electrónica",
-                            f"Factura electrónica enviada a FacturaTech.\nRespuesta: {response}\n\nEstado del documento electrónico:\n{estado}\n\nSe guardó un log en:\n{log_file}")
-                    else:
-                        with open(log_file, 'a', encoding='utf-8') as f:
-                            f.write("\n--- ERROR: No se encontró transaccionID en la respuesta de FacturaTech ---\n")
-                        messagebox.showwarning("Factura Electrónica",
-                            f"Factura electrónica enviada a FacturaTech.\nRespuesta: {response}\n\nNo se encontró transaccionID en la respuesta. No se puede consultar el estado del documento.\n\nSe guardó un log en:\n{log_file}")
-            except Exception as e:
-                messagebox.showerror("Error Factura Electrónica",
-                    f"No se pudo enviar la factura electrónica: {e}")
 
         self.numero_factura += 1
         self.label_numero_factura.config(text=str(self.numero_factura))
@@ -1054,20 +748,18 @@ class Ventas(tk.Frame):
         
         if new_cantidad is not None:
             try:
-                conn= sqlite3.connect(self.db_name)
-                c = conn.cursor()
-                c.execute ("SELECT precio,costo,stock FROM articulos WHERE articulo = ?", (current_product,))
-                resultado = c.fetchone()
-                
-                if resultado is None:
+                art = self.articulo_service.obtener_por_nombre(current_product)
+
+                if art is None:
                     messagebox.showerror("Error", "Producto no encontrado")
-                    
-                precio,costo,stock = resultado
-                
+                    return
+
+                precio, costo, stock = art.precio, art.costo, art.stock
+
                 if new_cantidad > stock:
                     messagebox.showerror("Error", f"No hay suficiente stock. Solo hay {stock} unidades disponibles")
                     return
-                
+
                 total = precio*new_cantidad
                 total_cop = "{:,.0f}".format(total)
                 self.tre.item(selected_item[0], values=(self.numero_factura, self.entry_cliente.get(), current_product, "{:,.0f}".format(precio),new_cantidad,total_cop))
@@ -1081,59 +773,15 @@ class Ventas(tk.Frame):
                             nuevo_item = nuevo_item + (codigo_existente,)
                         self.productos_seleccionados[idx] = nuevo_item
                         break
-                    
-                conn.close()
-                
+
                 self.calcular_precio_total()
-            except sqlite3.Error as e:
+            except Exception as e:
                 print("Error al editar el articulo: ", e)
                 
     def ver_ventas_realizadas(self):
         try:
-            conn = sqlite3.connect(self.db_name)
-            c = conn.cursor()
-            # Obtener ventas normales
-            if self.sucursal:
-                c.execute("""
-                    SELECT factura, cliente, articulo, precio, cantidad, total, descuento, fecha, hora, metodo_pago, sucursal, banco
-                    FROM ventas
-                    WHERE sucursal = ?
-                    ORDER BY fecha DESC, hora DESC
-                """, (self.sucursal,))
-            else:
-                c.execute("""
-                    SELECT factura, cliente, articulo, precio, cantidad, total, descuento, fecha, hora, metodo_pago, sucursal, banco
-                    FROM ventas
-                    ORDER BY fecha DESC, hora DESC
-                """)
-            ventas = c.fetchall()
-            facturas_ventas = set([v[0] for v in ventas])
-            # Obtener separados pagados como ventas
-            if self.sucursal:
-                c.execute("""
-                    SELECT s.factura, s.cliente, s.producto, s.precio, s.cantidad, s.total, 0 as descuento,
-                        IFNULL((SELECT MAX(fecha) FROM abonos_separados a WHERE a.factura = s.factura), s.fecha_separado) as fecha,
-                        '' as hora, s.metodo_pago, s.sucursal, '' as banco
-                    FROM separados s
-                    WHERE s.estado_deuda = 'pagado' AND s.sucursal = ?
-                    ORDER BY fecha DESC
-                """, (self.sucursal,))
-            else:
-                c.execute("""
-                    SELECT s.factura, s.cliente, s.producto, s.precio, s.cantidad, s.total, 0 as descuento,
-                        IFNULL((SELECT MAX(fecha) FROM abonos_separados a WHERE a.factura = s.factura), s.fecha_separado) as fecha,
-                        '' as hora, s.metodo_pago, s.sucursal, '' as banco
-                    FROM separados s
-                    WHERE s.estado_deuda = 'pagado'
-                    ORDER BY fecha DESC
-                """)
-            separados_pagados = c.fetchall()
-            # Filtrar separados que ya están en ventas
-            separados_filtrados = [s for s in separados_pagados if s[0] not in facturas_ventas]
-            # Unir ambas listas
-            ventas.extend(separados_filtrados)
-            conn.close()
-            
+            ventas = self.venta_service.listar_reporte(self.sucursal)
+
             ventana_ventas = tk.Toplevel(self)
             ventana_ventas.title("Ventas realizadas")
             ventana_ventas.geometry("1100x700+120+20")
@@ -1226,56 +874,15 @@ class Ventas(tk.Frame):
                 venta = tree.item(selected[0])['values']
                 num_factura = venta[0]  # El número de factura está en la primera columna
                 cliente = venta[1]      # El cliente está en la segunda columna
-                descuento = 0
-                try:  # Obtener el descuento de la base de datos para esa factura
-                    conn = sqlite3.connect(self.db_name)
-                    c = conn.cursor()
-                    c.execute("SELECT descuento FROM ventas WHERE factura = ? AND descuento > 0 LIMIT 1", (num_factura,))
-                    row = c.fetchone()
-                    if row and row[0]:
-                        descuento = float(row[0])
-                    conn.close()
-                except Exception as e:
-                    print(f"Error obteniendo descuento para la factura: {e}")
-                try:  # Obtener los productos de esta venta y el método de pago
-                    conn = sqlite3.connect(self.db_name)
-                    c = conn.cursor()
-                    c.execute("""
-                        SELECT articulo, precio, cantidad, total, costo, metodo_pago
-                        FROM ventas 
-                        WHERE factura = ?
-                    """, (num_factura,))
-                    productos = c.fetchall()
-                    if productos:
-                        productos_formato = [
-                            (num_factura, cliente, p[0], p[1], p[2], "{:,.0f}".format(float(str(p[3]).replace(",", "").replace(" ", ""))), p[4])
-                            for p in productos
-                        ]
-                        total_venta = sum(float(str(p[3]).replace(",", "").replace(" ", "")) for p in productos)
-                        # Calcular desglose desde abonos_separados para esta factura
-                        try:
-                            conn2 = sqlite3.connect(self.db_name)
-                            c2 = conn2.cursor()
-                            c2.execute("SELECT metodo_pago, monto FROM abonos_separados WHERE factura = ?", (num_factura,))
-                            efectivo_f = 0.0
-                            transferencia_f = 0.0
-                            for mtd, monto in c2.fetchall():
-                                m = (mtd or '').strip().lower()
-                                try:
-                                    mval = float(monto or 0)
-                                except Exception:
-                                    mval = 0.0
-                                if m == 'efectivo':
-                                    efectivo_f += mval
-                                elif m == 'transferencia':
-                                    transferencia_f += mval
-                            conn2.close()
-                        except Exception:
-                            efectivo_f = None
-                            transferencia_f = None
-                        self.generar_factura_pdf(total_venta, cliente, num_factura, descuento=descuento, efectivo_pagado=efectivo_f if efectivo_f else None, transferencia_pagada=transferencia_f if transferencia_f else None)
+                try:
+                    detalle = self.venta_service.obtener_detalle_factura(num_factura, cliente)
+                    if detalle["productos"]:
+                        self.generar_factura_pdf(
+                            detalle["total"], cliente, num_factura, descuento=detalle["descuento"],
+                            efectivo_pagado=detalle["efectivo"], transferencia_pagada=detalle["transferencia"],
+                        )
                         messagebox.showinfo("Éxito", f"La factura {num_factura} ha sido regenerada.")
-                except sqlite3.Error as e:
+                except Exception as e:
                     messagebox.showerror("Error", f"Error al regenerar la factura: {e}")
 
             btn_ver_factura = tk.Button(ventana_ventas, text="Ver factura", font="sans 14 bold", command=ver_factura)
@@ -1286,23 +893,7 @@ class Ventas(tk.Frame):
             
             def obtener_desglose_pagos_por_factura(num_factura):
                 try:
-                    efec = 0.0
-                    trans = 0.0
-                    conn_loc = sqlite3.connect(self.db_name)
-                    c_loc = conn_loc.cursor()
-                    # Sumar lo que exista en abonos_separados (incluye abono inicial reubicado al convertir)
-                    c_loc.execute("SELECT metodo_pago, monto FROM abonos_separados WHERE factura = ?", (num_factura,))
-                    for mtd, monto in c_loc.fetchall():
-                        m = (mtd or '').strip().lower()
-                        try:
-                            mval = float(monto or 0)
-                        except Exception:
-                            mval = 0.0
-                        if m == 'efectivo':
-                            efec += mval
-                        elif m == 'transferencia':
-                            trans += mval
-                    conn_loc.close()
+                    efec, trans = self.venta_service.obtener_desglose_pagos(num_factura)
                     efec_str = f"${efec:,.0f}" if efec > 0 else ""
                     trans_str = f"${trans:,.0f}" if trans > 0 else ""
                     return efec_str, trans_str
@@ -1475,7 +1066,7 @@ class Ventas(tk.Frame):
             # Mostrar ventas del día actual por defecto
             filtrar_por_fecha()
 
-        except sqlite3.Error as e:
+        except Exception as e:
             messagebox.showerror("Error", f"Error al cargar las ventas: {e}")
             print(f"Error al cargar las ventas: {e}")
     
@@ -1483,30 +1074,27 @@ class Ventas(tk.Frame):
         try:
             if num_factura is None:
                 num_factura = self.numero_factura
-            # Usar ruta absoluta para el archivo PDF
-            factura_path = os.path.abspath(f"facturas/factura_{num_factura}.pdf")
+            # Usar ruta absoluta para el archivo PDF, anclada a la carpeta del proyecto (no al cwd)
+            factura_path = rutas(f"facturas/factura_{num_factura}.pdf")
+            os.makedirs(os.path.dirname(factura_path), exist_ok=True)
             c = canvas.Canvas(factura_path, pagesize=letter)
             
             # Obtener información de la empresa
             try:
-                conn = sqlite3.connect(self.db_name)
-                cursor = conn.cursor()
-                cursor.execute("SELECT nombre, direccion, telefono, email, nit FROM empresa WHERE id = 1")
-                info_empresa = cursor.fetchone()
-                conn.close()
+                info_empresa = self.empresa_service.obtener()
                 if info_empresa:
-                    empresa_nombre = info_empresa[0]
-                    empresa_direccion = info_empresa[1]
-                    empresa_telefono = info_empresa[2]
-                    empresa_email = info_empresa[3]
-                    empresa_nit = info_empresa[4] if len(info_empresa) > 4 and info_empresa[4] is not None else "NIT no configurado"
+                    empresa_nombre = info_empresa.nombre
+                    empresa_direccion = info_empresa.direccion
+                    empresa_telefono = info_empresa.telefono
+                    empresa_email = info_empresa.email
+                    empresa_nit = info_empresa.nit if info_empresa.nit else "NIT no configurado"
                 else:
                     empresa_nombre = "Empresa no configurada"
                     empresa_direccion = "Dirección no configurada"
                     empresa_telefono = "Teléfono no configurado"
                     empresa_email = "Email no configurado"
                     empresa_nit = "NIT no configurado"
-            except sqlite3.Error as e:
+            except Exception as e:
                 print(f"Error al obtener información de la empresa: {e}")
                 empresa_nombre = "Error al cargar datos"
                 empresa_direccion = "Error al cargar datos"
@@ -1536,11 +1124,7 @@ class Ventas(tk.Frame):
 
             # Cliente y método de pago en la misma línea, debajo del NIT
             try:
-                conn = sqlite3.connect(self.db_name)
-                c_db = conn.cursor()
-                c_db.execute("SELECT DISTINCT metodo_pago, banco FROM ventas WHERE factura = ?", (num_factura,))
-                metodo_result = c_db.fetchone()
-                conn.close()
+                metodo_result = self.venta_service.obtener_metodo_pago_banco(num_factura)
                 metodo = metodo_result[0] if metodo_result and metodo_result[0] else "No especificado"
                 banco_val = banco if banco else getattr(self, 'banco_pago', None) or (metodo_result[1] if metodo_result and len(metodo_result) > 1 else None)
             except Exception:
@@ -1607,16 +1191,8 @@ class Ventas(tk.Frame):
             # Obtener productos de la base de datos si es una factura existente
             if num_factura != self.numero_factura:
                 try:
-                    conn = sqlite3.connect(self.db_name)
-                    c_db = conn.cursor()
-                    c_db.execute("""
-                        SELECT articulo, cantidad, precio, total 
-                        FROM ventas 
-                        WHERE factura = ?
-                    """, (num_factura,))
-                    productos_factura = c_db.fetchall()
-                    conn.close()
-                except:
+                    productos_factura = self.venta_service.listar_para_pdf(num_factura)
+                except Exception:
                     productos_factura = []
             else:
                 productos_factura = []
@@ -1703,18 +1279,13 @@ class Ventas(tk.Frame):
         if not self.username:
             return None
         try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            cursor.execute("SELECT sucursal, rol FROM usuarios WHERE username = ?", (self.username,))
-            result = cursor.fetchone()
-            conn.close()
-            if result:
-                sucursal, rol = result
-                if rol.lower() in ["admin", "administrador"]:
+            usuario = self.usuario_service.obtener_por_username(self.username)
+            if usuario:
+                if usuario.rol.lower() in ["admin", "administrador"]:
                     return None  # Admin puede ver todas las sucursales
-                return sucursal
+                return usuario.sucursal
             return None
-        except sqlite3.Error as e:
+        except Exception as e:
             print("Error al obtener sucursal del usuario:", e)
             return None
 

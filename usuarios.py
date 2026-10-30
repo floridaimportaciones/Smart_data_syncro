@@ -1,30 +1,27 @@
-import sqlite3
 from tkinter import *
 import tkinter as tk
 from tkinter import ttk, messagebox,filedialog
 from PIL import Image, ImageTk
 import os
 import sys
-from Smart_data_syncro.utils import rutas
+from Smart_data_syncro.utils import rutas, imagen_segura
+from Smart_data_syncro.services.usuario_service import UsuarioService
+from Smart_data_syncro.services.sucursal_service import SucursalService
 
 
 class Usuarios(tk.Frame):
-    import os
-    db_name = os.path.abspath('database.db')
     def __init__(self, padre):
         super().__init__(padre)
+        self.service = UsuarioService()
+        self.sucursal_service = SucursalService()
         self.widgets()
         self.cargar_usuarios()
         self.cargar_sucursales()
-        
+
     def cargar_sucursales(self):
         try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            cursor.execute("SELECT nombre FROM sucursales")
-            self.sucursales = [sucursal[0] for sucursal in cursor.fetchall()]
-            conn.close()
-        except sqlite3.Error as e:
+            self.sucursales = [s.nombre for s in self.sucursal_service.listar()]
+        except Exception as e:
             print("Error al cargar sucursales:", e)
             self.sucursales = []
 
@@ -48,15 +45,15 @@ class Usuarios(tk.Frame):
 
         self.tree.pack(fill="both", expand=True)
 
-        self.imagen_agregar_usuario = Image.open(rutas("imagenes/agregarUsuario.png"))
+        self.imagen_agregar_usuario = imagen_segura(rutas("imagenes/agregarUsuario.png"))
         imagen_agregar_usuario = self.imagen_agregar_usuario.resize((50,50))
         imagen_agregar_usuario = ImageTk.PhotoImage(imagen_agregar_usuario)
 
-        self.imagen_actualizar_usuario = Image.open(rutas("imagenes/actualizarUsuario.png"))
+        self.imagen_actualizar_usuario = imagen_segura(rutas("imagenes/actualizarUsuario.png"))
         imagen_actualizar_usuario = self.imagen_actualizar_usuario.resize((50,50))
         imagen_actualizar_usuario = ImageTk.PhotoImage(imagen_actualizar_usuario)
 
-        self.imagen_eliminar_usuario = Image.open(rutas("imagenes/eliminarUsuario.png"))
+        self.imagen_eliminar_usuario = imagen_segura(rutas("imagenes/eliminarUsuario.png"))
         imagen_eliminar_usuario = self.imagen_eliminar_usuario.resize((50,50))
         imagen_eliminar_usuario = ImageTk.PhotoImage(imagen_eliminar_usuario)
 
@@ -132,20 +129,15 @@ class Usuarios(tk.Frame):
                 return
 
             try:
-                conn = sqlite3.connect(self.db_name)
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO usuarios (username, password, rol, sucursal) VALUES (?, ?, ?, ?)",
-                             (username, password, rol, sucursal))
-                conn.commit()
-                conn.close()
+                self.service.crear(username, password, rol, sucursal)
                 messagebox.showinfo("Éxito", "Usuario agregado correctamente.")
                 top.destroy()
                 self.cargar_usuarios()
-            except sqlite3.Error as e:
+            except Exception as e:
                 messagebox.showerror("Error", f"No se pudo agregar el usuario: {e}")
 
         # Botones
-        self.imagen_guardar = Image.open(rutas("imagenes/guardar.png"))
+        self.imagen_guardar = imagen_segura(rutas("imagenes/guardar.png"))
         imagen_guardar = self.imagen_guardar.resize((30, 30))
         imagen_guardar = ImageTk.PhotoImage(imagen_guardar)
 
@@ -154,7 +146,7 @@ class Usuarios(tk.Frame):
         self.btn_guardar.image = imagen_guardar
         self.btn_guardar.place(x=50, y=400, width=100, height=40)
 
-        self.imagen_cancelar = Image.open(rutas("imagenes/cancelar.png"))
+        self.imagen_cancelar = imagen_segura(rutas("imagenes/cancelar.png"))
         imagen_cancelar = self.imagen_cancelar.resize((30, 30))
         imagen_cancelar = ImageTk.PhotoImage(imagen_cancelar)
 
@@ -232,19 +224,11 @@ class Usuarios(tk.Frame):
                 return
 
             try:
-                conn = sqlite3.connect(self.db_name)
-                cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE usuarios
-                    SET username = ?, password = ?, rol = ?, sucursal = ?
-                    WHERE id = ?
-                """, (nuevo_usuario, nueva_contraseña, nuevo_rol, nueva_sucursal, id_usuario))
-                conn.commit()
-                conn.close()
+                self.service.actualizar(int(id_usuario), nuevo_usuario, nueva_contraseña, nuevo_rol, nueva_sucursal)
                 messagebox.showinfo("Éxito", "Usuario actualizado correctamente.")
                 top.destroy()
                 self.cargar_usuarios()
-            except sqlite3.Error as e:
+            except Exception as e:
                 messagebox.showerror("Error", f"No se pudo actualizar el usuario: {e}")
 
         # Botones
@@ -273,14 +257,10 @@ class Usuarios(tk.Frame):
 
         if confirmar:
             try:
-                conn = sqlite3.connect(self.db_name)
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM usuarios WHERE id = ?", (id_usuario,))
-                conn.commit()
-                conn.close()
+                self.service.eliminar(int(id_usuario))
                 messagebox.showinfo("Éxito", f"Usuario '{nombre_usuario}' eliminado correctamente.")
                 self.cargar_usuarios()
-            except sqlite3.Error as e:
+            except Exception as e:
                 messagebox.showerror("Error", f"No se pudo eliminar el usuario: {e}")
 
 
@@ -295,31 +275,19 @@ class Usuarios(tk.Frame):
             for item in self.tree.get_children():
                 self.tree.delete(item)
 
-            # Conectar a la base de datos y obtener usuarios
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, username, password, rol, sucursal FROM usuarios")
-            usuarios = cursor.fetchall()
-            
+            usuarios = self.service.listar()
+
             if not usuarios:
                 messagebox.showinfo("Información", "No hay usuarios registrados.")
                 return
-            
+
             # Insertar usuarios en el Treeview
             for usuario in usuarios:
-                # Asegurar que tenemos todos los campos
-                id_usuario = usuario[0]
-                username = usuario[1]
-                password = usuario[2]
-                rol = usuario[3]
-                sucursal = usuario[4] if len(usuario) > 4 else "No asignada"
-                
-                usuario_mostrar = (id_usuario, username, password, rol, sucursal)
+                sucursal = usuario.sucursal if usuario.sucursal else "No asignada"
+                usuario_mostrar = (usuario.id, usuario.username, usuario.password, usuario.rol, sucursal)
                 self.tree.insert('', 'end', values=usuario_mostrar)
-            
-            conn.close()
-            
-        except sqlite3.Error as e:
+
+        except Exception as e:
             messagebox.showerror("Error de conexión", f"No se pudo conectar a la base de datos: {e}")
             return
 
