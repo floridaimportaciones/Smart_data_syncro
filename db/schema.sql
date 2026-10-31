@@ -54,7 +54,8 @@ CREATE TABLE empresa (
     telefono TEXT,
     email TEXT,
     website TEXT,
-    nit TEXT
+    nit TEXT,
+    codigo_registro TEXT
 );
 
 CREATE TABLE separados (

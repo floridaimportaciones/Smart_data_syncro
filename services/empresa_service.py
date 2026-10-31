@@ -11,8 +11,15 @@ class EmpresaService:
         if not nombre or not direccion or not telefono or not email:
             raise  ValueError("Todos los campos tienen que estar llenos")
 
-    def guardar(self, nombre, direccion, telefono, email, website=None, nit=None):
+    def guardar(self, nombre, direccion, telefono, email, website=None, nit=None, codigo_registro=None):
         self._validar(nombre,direccion,telefono, email)
-        self.repository.guardar(nombre,direccion,telefono,email , website , nit )
+        self.repository.guardar(nombre,direccion,telefono,email, website, nit, codigo_registro)
+
+    def validar_codigo_registro(self, codigo):
+        empresa = self.obtener()
+        codigo_configurado = empresa.codigo_registro if empresa else None
+        if not codigo_configurado:
+            raise ValueError("No hay un código de registro configurado. Pídele a un administrador que lo configure en Mi Empresa.")
+        return bool(codigo) and codigo == codigo_configurado
 
     

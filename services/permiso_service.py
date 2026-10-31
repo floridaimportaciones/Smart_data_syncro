@@ -1,6 +1,6 @@
 from Smart_data_syncro.repositories.permiso_repository import PermisoRepository
 
-MODULOS = ["Ventas", "Inventario", "Clientes", "Reportes", "Configuracion", "Usuarios"]
+MODULOS = ["Ventas", "Inventario", "Separados", "Clientes", "Reportes", "Configuracion", "Usuarios"]
 
 
 class PermisoService:

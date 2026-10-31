@@ -59,6 +59,7 @@ class Empresa(Base):
     email = Column(String)
     website = Column(String)
     nit = Column(String)
+    codigo_registro = Column(String)
 
 
 class Venta(Base):
